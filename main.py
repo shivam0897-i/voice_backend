@@ -1200,7 +1200,11 @@ def build_risk_update(
     # Instead of a flat floor at 70, escalate based on how many chunks
     # have been classified as AI.  floor = 70 + min(20, ai_chunks * 5)
     # This means: 1 AI chunk → 75, 2 → 80, 3 → 85, 4+ → 90.
-    if classification == "AI_GENERATED" and confidence >= 0.85:
+    # Raised confidence threshold to 0.92 (was 0.85) because with
+    # temperature scaling T=4.0, the softened model outputs 0.67-0.84
+    # for browser mic audio. Only truly confident AI predictions should
+    # trigger this floor escalation.
+    if classification == "AI_GENERATED" and confidence >= 0.92:
         ai_floor = 70 + min(20, _voice_ai_chunks * 5)
         risk_score = max(risk_score, ai_floor)
         if _voice_ai_chunks >= 2:
@@ -1296,7 +1300,7 @@ def build_risk_update(
             reasons.append(f"conversational pressure index spiked ({cpi:.0f})")
         if "sustained_ai_voice" in behaviour_signals:
             reasons.append(f"sustained AI-generated voice across {_voice_ai_chunks} chunks")
-        elif classification == "AI_GENERATED" and confidence >= 0.85:
+        elif classification == "AI_GENERATED" and confidence >= 0.92:
             reasons.append(f"AI-generated voice detected ({confidence:.0%} confidence)")
         if "risk_dampened_no_prior_high" in behaviour_signals:
             reasons.append("risk capped — awaiting corroboration from additional chunks")
@@ -1626,6 +1630,21 @@ async def process_audio_chunk(
         # at least SPAM so the label reflects the AI detection.
         elif session.final_voice_classification == "AI_GENERATED" and session.final_call_label == "SAFE":
             session.final_call_label = "SPAM"
+
+        # ── P5: Average risk sanity check ────────────────────────────
+        # When the average risk across all chunks is LOW (< 35) but the
+        # label is FRAUD (because one or two spikes hit max_risk_score),
+        # downgrade to SPAM.  A session where 80%+ of chunks are SAFE
+        # should not be labelled FRAUD — the spikes were likely
+        # misclassifications from browser mic audio artifacts.
+        if session.final_call_label == "FRAUD" and session.chunks_processed >= 5:
+            avg_risk = sum(session.risk_history) / max(1, len(session.risk_history))
+            if avg_risk < 35:
+                session.final_call_label = "SPAM"
+                logger.info(
+                    f"P5 sanity: downgraded FRAUD → SPAM (avg_risk={avg_risk:.1f}, "
+                    f"chunks={session.chunks_processed})"
+                )
 
         if scored["alert"].triggered:
             alert_obj = scored["alert"]
