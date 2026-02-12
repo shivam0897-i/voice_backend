@@ -637,12 +637,12 @@ def analyze_voice(audio: np.ndarray, sr: int, language: str = "English", realtim
                 authenticity_score, acoustic_anomaly_score,
             )
             ml_confidence = moderation_factor
-        # If authenticity indicates human-like features (>45) and anomaly
+        # If authenticity indicates human-like features (>40) and anomaly
         # is not extreme (<65), override the classification — the signal
         # evidence strongly contradicts the model. Browser mic audio
-        # naturally has anomaly 40-64 and authenticity 34-68, so the
+        # naturally has anomaly 22-64 and authenticity 34-68, so the
         # thresholds must cover these real-world ranges.
-        if authenticity_score > 45 and acoustic_anomaly_score < 65:
+        if authenticity_score > 40 and acoustic_anomaly_score < 65:
             logger.info(
                 "Authenticity override: flipping AI_GENERATED → HUMAN "
                 "(authenticity=%.1f, anomaly=%.1f, original_conf=%.2f)",

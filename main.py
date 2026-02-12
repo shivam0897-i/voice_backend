@@ -1100,9 +1100,10 @@ def build_risk_update(
     else:
         authenticity_audio_score = int(max(0, min(100, (50.0 - authenticity) * 1.2)))
         # Browser mic naturally has higher spectral anomaly (40-78) due to
-        # noise floor and frequency response. Use 0.70 multiplier (was 0.90)
-        # so anomaly 60 → score 42 instead of 54.
-        anomaly_audio_score = int(max(0.0, min(100.0, acoustic_anomaly * 0.70)))
+        # noise floor and frequency response. Use 0.55 multiplier (was 0.70)
+        # so anomaly 60 → score 33 instead of 42, keeping HUMAN chunks in
+        # LOW risk range where they belong.
+        anomaly_audio_score = int(max(0.0, min(100.0, acoustic_anomaly * 0.55)))
         audio_score = max(authenticity_audio_score, anomaly_audio_score)
 
     has_language_signals = bool(transcript) or keyword_score > 0 or semantic_score > 0 or behaviour_score > 0
@@ -1623,9 +1624,12 @@ async def process_audio_chunk(
 
         # ── P4: Reconcile final_call_label with majority vote ────────
         # If the majority vote says HUMAN but the watermark-based label
-        # is FRAUD, downgrade to at most SPAM to avoid contradiction.
+        # is FRAUD, downgrade.  Use average risk (not max) to decide
+        # between SPAM and SAFE — a single spike shouldn't override an
+        # otherwise clean session.
         if session.final_voice_classification == "HUMAN" and session.final_call_label == "FRAUD":
-            session.final_call_label = "SPAM" if session.max_risk_score >= 35 else "SAFE"
+            avg_risk = sum(session.risk_history) / max(1, len(session.risk_history))
+            session.final_call_label = "SPAM" if avg_risk >= 30 else "SAFE"
         # If majority says AI_GENERATED but label is SAFE, upgrade to
         # at least SPAM so the label reflects the AI detection.
         elif session.final_voice_classification == "AI_GENERATED" and session.final_call_label == "SAFE":
