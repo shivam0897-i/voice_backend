@@ -962,7 +962,7 @@ def build_risk_update(
     normalized_classification = str(classification or "").upper()
     low_confidence_uncertain = bool(
         normalized_classification != "AI_GENERATED"
-        and float(confidence) < 0.65
+        and float(confidence) < 0.50
         and int(language_analysis.get("keyword_score", 0)) == 0
         and int(language_analysis.get("semantic_score", 0)) == 0
         and int(language_analysis.get("behaviour_score", 0)) == 0
