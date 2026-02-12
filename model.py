@@ -614,17 +614,22 @@ def analyze_voice(audio: np.ndarray, sr: int, language: str = "English", realtim
         ml_confidence = ai_probability if classification == "AI_GENERATED" else (1.0 - ai_probability)
         ml_confidence = float(max(0.5, min(0.99, ml_confidence)))
 
-    # ── Authenticity cross-check ──────────────────────────────────────
+    # ── Authenticity cross-check (REALTIME ONLY) ─────────────────────
     # When the model says AI_GENERATED but the signal forensics indicate
     # human-like audio (high authenticity), moderate the confidence.
     # This prevents a poorly-calibrated model from steamrolling the
     # heuristic evidence.  The model was fine-tuned on curated datasets
     # and can misclassify real browser-mic audio as synthetic.
     #
+    # IMPORTANT: This override is ONLY for realtime browser-mic sessions.
+    # File uploads use clean audio paths and the model's classification
+    # should be trusted.  Applying the override to file uploads would
+    # cause real AI-generated audio to be misclassified as HUMAN.
+    #
     # Browser-mic audio typically has authenticity 34-60 and anomaly 40-78
     # (naturally higher noise floor and spectral irregularity). The
     # thresholds must reflect these real-world ranges.
-    if classification == "AI_GENERATED" and authenticity_score > 35:
+    if realtime and classification == "AI_GENERATED" and authenticity_score > 35:
         # The higher the authenticity, the more we moderate.
         # authenticity 35 → no change.  authenticity 60 → cap at ~0.75
         # authenticity 80 → cap at ~0.55
