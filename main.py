@@ -864,15 +864,19 @@ def build_explainability_payload(
     behaviour_signals: List[str],
     keyword_hits: List[str],
     acoustic_anomaly: float,
+    risk_score: int = 0,
+    delta_boost: int = 0,
 ) -> RealTimeExplainability:
     """Build explicit explainability signals and concise summary."""
     if has_language_signals:
-        weights = {
-            "audio": 0.45,
-            "keywords": 0.20,
-            "semantic": 0.15,
-            "behaviour": 0.20,
+        raw_weights = {
+            "audio": settings.RISK_WEIGHT_AUDIO,
+            "keywords": settings.RISK_WEIGHT_KEYWORD,
+            "semantic": settings.RISK_WEIGHT_SEMANTIC,
+            "behaviour": settings.RISK_WEIGHT_BEHAVIOUR,
         }
+        total = sum(raw_weights.values()) or 1.0
+        weights = {k: v / total for k, v in raw_weights.items()}
     else:
         weights = {
             "audio": 1.00,
@@ -915,9 +919,12 @@ def build_explainability_payload(
     indicators.extend(keyword_hits[:3])
     deduped_indicators = list(dict.fromkeys(indicators))[:6]
 
+    base_from_signals = sum(c.weighted_score for c in contributions)
     summary_parts: List[str] = [
         f"{risk_level.title()} risk classified as {call_label}."
     ]
+    if delta_boost > 0:
+        summary_parts.append(f"Score {risk_score} (base {int(base_from_signals)} + {delta_boost} trend boost).")
     summary_parts.append(f"CPI at {cpi:.1f}/100.")
     if acoustic_anomaly >= 60:
         summary_parts.append("Audio anomalies are materially elevated.")
@@ -1067,8 +1074,10 @@ def build_risk_update(
     else:
         delta = 0
 
+    delta_boost = 0
     if delta > 0:
-        risk_score = min(100, risk_score + int(delta * settings.RISK_DELTA_BOOST_FACTOR))
+        delta_boost = int(delta * settings.RISK_DELTA_BOOST_FACTOR)
+        risk_score = min(100, risk_score + delta_boost)
 
     if previous_score is None:
         cpi = min(100.0, max(0.0, (behaviour_score * 0.35) + (semantic_score * 0.20)))
@@ -1160,6 +1169,8 @@ def build_risk_update(
         behaviour_signals=behaviour_signals,
         keyword_hits=keyword_hits,
         acoustic_anomaly=acoustic_anomaly,
+        risk_score=risk_score,
+        delta_boost=delta_boost,
     )
 
     return {
@@ -1375,8 +1386,17 @@ async def process_audio_chunk(
         elif voice_classification == "HUMAN":
             session.voice_human_chunks += 1
 
-        session.final_voice_classification = voice_classification
-        session.final_voice_confidence = voice_confidence
+        # Use majority vote for session-level classification instead of last-chunk
+        if session.voice_ai_chunks > session.voice_human_chunks:
+            session.final_voice_classification = "AI_GENERATED"
+            session.final_voice_confidence = session.max_voice_ai_confidence
+        elif session.voice_human_chunks > session.voice_ai_chunks:
+            session.final_voice_classification = "HUMAN"
+            session.final_voice_confidence = voice_confidence
+        else:
+            # Tie — use the latest chunk's decision
+            session.final_voice_classification = voice_classification
+            session.final_voice_confidence = voice_confidence
 
         if scored["alert"].triggered:
             alert_obj = scored["alert"]
