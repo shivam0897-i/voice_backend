@@ -86,6 +86,12 @@ class Settings(BaseSettings):
         default="./fine_tuned_model",
         description="Optional local model path that takes priority when present"
     )
+    MODEL_LOGIT_TEMPERATURE: float = Field(
+        default=2.5,
+        ge=1.0,
+        le=10.0,
+        description="Temperature scaling for model logits before softmax. Higher values reduce overconfidence. 1.0 = no scaling."
+    )
     REALTIME_LIGHTWEIGHT_AUDIO: bool = Field(
         default=False,
         description="Use lightweight audio analysis path for realtime chunk processing (set true for throughput-first mode)"

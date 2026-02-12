@@ -506,6 +506,15 @@ def classify_with_model(audio: np.ndarray, sr: int) -> Tuple[str, float]:
     with torch.no_grad():
         outputs = model(**inputs)
         logits = outputs.logits
+
+        # Temperature scaling: divide logits by T > 1 to soften the
+        # probability distribution.  The model routinely saturates at
+        # 1.00 confidence for browser-mic audio, leaving zero room for
+        # the heuristic cross-check to correct a wrong classification.
+        temperature = float(settings.MODEL_LOGIT_TEMPERATURE)
+        if temperature > 1.0:
+            logits = logits / temperature
+
         probabilities = torch.softmax(logits, dim=-1)
         
         # Get prediction
@@ -604,6 +613,36 @@ def analyze_voice(audio: np.ndarray, sr: int, language: str = "English", realtim
         classification = "AI_GENERATED" if ai_probability >= 0.56 else "HUMAN"
         ml_confidence = ai_probability if classification == "AI_GENERATED" else (1.0 - ai_probability)
         ml_confidence = float(max(0.5, min(0.99, ml_confidence)))
+
+    # ── Authenticity cross-check ──────────────────────────────────────
+    # When the model says AI_GENERATED but the signal forensics indicate
+    # human-like audio (high authenticity), moderate the confidence.
+    # This prevents a poorly-calibrated model from steamrolling the
+    # heuristic evidence.  The model was fine-tuned on curated datasets
+    # and can misclassify real browser-mic audio as synthetic.
+    if classification == "AI_GENERATED" and authenticity_score > 50:
+        # The higher the authenticity, the more we moderate.
+        # authenticity 50 → no change.  authenticity 80 → cap at ~0.72
+        moderation_factor = max(0.50, 1.0 - (authenticity_score - 50) / 100.0)
+        if ml_confidence > moderation_factor:
+            logger.info(
+                "Authenticity cross-check: moderated AI confidence %.2f → %.2f "
+                "(authenticity=%.1f, anomaly=%.1f)",
+                ml_confidence, moderation_factor,
+                authenticity_score, acoustic_anomaly_score,
+            )
+            ml_confidence = moderation_factor
+        # If authenticity is very high (>65) and anomaly is low (<40),
+        # override the classification entirely — the signal evidence
+        # strongly contradicts the model.
+        if authenticity_score > 65 and acoustic_anomaly_score < 40:
+            logger.info(
+                "Authenticity override: flipping AI_GENERATED → HUMAN "
+                "(authenticity=%.1f, anomaly=%.1f, original_conf=%.2f)",
+                authenticity_score, acoustic_anomaly_score, ml_confidence,
+            )
+            classification = "HUMAN"
+            ml_confidence = max(0.55, 1.0 - ml_confidence)  # invert confidence
 
     features["ml_confidence"] = ml_confidence
     features["ml_fallback"] = float(ml_fallback)

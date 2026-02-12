@@ -1085,10 +1085,17 @@ def build_risk_update(
 
     # Audio signal risk.
     if classification == "AI_GENERATED":
-        audio_score = max(
-            int(round(confidence * 100)),
-            int(max(0.0, min(100.0, acoustic_anomaly * 0.85))),
-        )
+        confidence_audio = int(round(confidence * 100))
+        anomaly_audio = int(max(0.0, min(100.0, acoustic_anomaly * 0.85)))
+        audio_score = max(confidence_audio, anomaly_audio)
+        # When authenticity (signal forensics) contradicts AI classification,
+        # dampen the audio_score.  High authenticity means the heuristic
+        # features look human-like — the model may be wrong.
+        if authenticity > 50:
+            # Scale factor: authenticity 50 → 1.0 (no change),
+            #               authenticity 80 → 0.70,  authenticity 100 → 0.50
+            auth_dampen = max(0.50, 1.0 - (authenticity - 50) / 100.0)
+            audio_score = int(round(audio_score * auth_dampen))
     else:
         authenticity_audio_score = int(max(0, min(100, (50.0 - authenticity) * 1.2)))
         anomaly_audio_score = int(max(0.0, min(100.0, acoustic_anomaly * 0.90)))
