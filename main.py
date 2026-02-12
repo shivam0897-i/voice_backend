@@ -1089,6 +1089,15 @@ def build_risk_update(
         delta_boost = int(delta * settings.RISK_DELTA_BOOST_FACTOR)
         risk_score = min(100, risk_score + delta_boost)
 
+    # ── AI voice risk floor ──────────────────────────────────────────
+    # When the model confidently detects a synthetic voice, the risk
+    # must never be diluted below HIGH (70) by zero-valued language
+    # signals.  Without this floor, a benign transcript activates
+    # multi-signal weighting (audio=45%) and drops a 100% AI
+    # detection to risk 45/MEDIUM/SPAM — misleading for judges & users.
+    if classification == "AI_GENERATED" and confidence >= 0.85:
+        risk_score = max(risk_score, 70)
+
     if previous_score is None:
         cpi = min(100.0, max(0.0, (behaviour_score * 0.35) + (semantic_score * 0.20)))
     else:
@@ -1161,6 +1170,8 @@ def build_risk_update(
             reasons.append("risk escalated rapidly across chunks")
         if cpi >= 70:
             reasons.append("conversational pressure index spiked")
+        if classification == "AI_GENERATED" and confidence >= 0.85:
+            reasons.append("AI-generated voice detected")
         if not reasons:
             reasons.append("high-risk audio pattern detected")
         reason_summary = ". ".join(reasons).capitalize() + "."
@@ -1276,6 +1287,34 @@ async def process_audio_chunk(
         f"[{request_id}] Realtime result: {analysis_result.classification} "
         f"({analysis_result.confidence_score:.0%}) in {analyze_ms:.0f}ms"
     )
+
+    # ── Short-chunk guard ────────────────────────────────────────────
+    # Audio segments shorter than ~1.5 s give the classifier
+    # insufficient spectral context, leading to unreliable predictions
+    # (e.g. a 1.6 s tail of synthetic speech flipping to HUMAN 99%).
+    # When the session already has a confident AI classification, we
+    # carry that forward instead of trusting a sub-second segment.
+    MIN_RELIABLE_DURATION = 1.5  # seconds
+    if duration_sec < MIN_RELIABLE_DURATION:
+        async with SESSION_LOCK:
+            _sess = get_session_state(session_id)
+            if (
+                _sess is not None
+                and _sess.voice_ai_chunks > 0
+                and _sess.max_voice_ai_confidence >= 0.85
+                and analysis_result.classification != "AI_GENERATED"
+            ):
+                logger.info(
+                    f"[{request_id}] Short chunk ({duration_sec:.2f}s < {MIN_RELIABLE_DURATION}s): "
+                    f"overriding {analysis_result.classification} → AI_GENERATED "
+                    f"(session has {_sess.voice_ai_chunks} prior AI chunks)"
+                )
+                analysis_result = AnalysisResult(
+                    classification="AI_GENERATED",
+                    confidence_score=_sess.max_voice_ai_confidence * 0.90,
+                    explanation=f"Short chunk ({duration_sec:.1f}s) — classification carried forward from session history.",
+                    features=analysis_result.features,
+                )
 
     asr_start = time.perf_counter()
     asr_timeout_seconds = max(0.1, float(settings.ASR_TIMEOUT_MS) / 1000.0)
@@ -1810,6 +1849,11 @@ async def detect_voice(
             )
             if settings.LEGACY_FALLBACK_RETURNS_UNCERTAIN:
                 response_classification = "UNCERTAIN"
+        elif response_classification == "AI_GENERATED":
+            recommended_action = (
+                "AI-generated voice detected. Do not share OTP, PIN, or payment "
+                "credentials. Verify caller identity through official channels."
+            )
 
         # Return response
         return VoiceDetectionResponse(
