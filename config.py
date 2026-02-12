@@ -48,7 +48,7 @@ class Settings(BaseSettings):
     ASR_COMPUTE_TYPE: str = Field(default="int8", description="faster-whisper compute type")
     ASR_BEAM_SIZE: int = Field(default=1, description="Beam size for ASR decoding")
     ASR_TIMEOUT_MS: int = Field(
-        default=2500,
+        default=1200,
         ge=200,
         le=15000,
         description="Max realtime ASR duration per chunk before timeout fallback"
@@ -86,7 +86,7 @@ class Settings(BaseSettings):
         description="Optional local model path that takes priority when present"
     )
     REALTIME_LIGHTWEIGHT_AUDIO: bool = Field(
-        default=False,
+        default=True,
         description="Use lightweight audio analysis path for realtime chunk processing (set true for throughput-first mode)"
     )
     LEGACY_FALLBACK_RETURNS_UNCERTAIN: bool = Field(
@@ -109,8 +109,8 @@ class Settings(BaseSettings):
 
     # Optional LLM semantic verifier (second-layer, not primary classifier)
     LLM_SEMANTIC_ENABLED: bool = Field(default=False)
-    LLM_PROVIDER: str = Field(default="openai", description="LLM provider: openai or gemini")
-    LLM_SEMANTIC_MODEL: str = Field(default="", description="Model name for selected LLM provider (optional)")
+    LLM_PROVIDER: str = Field(default="gemini", description="LLM provider: openai or gemini")
+    LLM_SEMANTIC_MODEL: str = Field(default="gemini-2.5-flash", description="Model name for selected LLM provider (optional)")
     LLM_SEMANTIC_TIMEOUT_MS: int = Field(default=900, ge=100, le=5000)
     LLM_SEMANTIC_MIN_ASR_CONFIDENCE: float = Field(default=0.35, ge=0.0, le=1.0)
     LLM_SEMANTIC_CHUNK_INTERVAL: int = Field(default=2, ge=1, le=20)
@@ -125,7 +125,7 @@ class Settings(BaseSettings):
 
     # Session store backend
     SESSION_STORE_BACKEND: str = Field(
-        default="memory",
+        default="redis",
         description="Session store backend: memory or redis"
     )
     REDIS_URL: str | None = Field(
