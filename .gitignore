@@ -1,0 +1,60 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Local AI/tooling folders
+.agent/
+.agents/
+.codex/
+.claude/
+.gemini/
+.trae/
+.windsurf/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.log
+.vscode/
+.idea/
+*.swp
+
+# Large artifacts
+*.mp4
+*.wav
+*.mp3
+fine_tuned_model/
+training/
+
+# === Non-production files (keep out of HF Space) ===
+
+# Tests
+tests/
+pytest.ini
+
+# Docs and reports
+docs/
+
+# Dev/validation scripts
+scripts/
+scenario_validation_cases.py
+
+# Test request fixtures
+test_request.json
+test_valid.json
+
+# Helper/patch scripts
+_fix_*.py
