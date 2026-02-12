@@ -46,12 +46,26 @@ def get_device():
     return _device
 
 
+_invert_labels: bool = False
+
+
+def _detect_label_inversion(model):
+    """Check once at load time whether this model needs label flipping."""
+    global _invert_labels
+    name = getattr(model.config, '_name_or_path', '').lower()
+    if 'shivam-2211' in name or 'voice-detection-model' in name:
+        _invert_labels = True
+        logger.info("Model has inverted training labels — label flip enabled (logged once)")
+    else:
+        _invert_labels = False
+
+
 def load_model():
     """
     Load the Wav2Vec2 deepfake detection model.
     Prioritizes HuggingFace Hub model, with local fallback.
     """
-    global _model, _processor
+    global _model, _processor, _invert_labels
     
     if _model is None:
         from transformers import Wav2Vec2ForSequenceClassification, Wav2Vec2FeatureExtractor
@@ -78,6 +92,7 @@ def load_model():
             _model.to(get_device())
             _model.eval()
             logger.info(f"Model loaded successfully: {model_name}")
+            _detect_label_inversion(_model)
         except Exception as e:
             logger.error(f"Failed to load model {model_name}: {e}")
             if model_name != backup_model:
@@ -89,6 +104,7 @@ def load_model():
                     _model.to(get_device())
                     _model.eval()
                     logger.info(f"Backup model loaded: {model_name}")
+                    _detect_label_inversion(_model)
                 except Exception as e2:
                     raise RuntimeError(f"Could not load any model: {e2}")
             else:
@@ -484,7 +500,7 @@ def classify_with_model(audio: np.ndarray, sr: int) -> Tuple[str, float]:
     id2label = {int(k): v for k, v in raw_id2label.items()}
     label = id2label.get(predicted_class, 'UNKNOWN')
 
-    logger.info(
+    logger.debug(
         "Model id2label=%s  predicted_class=%d  resolved_label=%s  probs=%s",
         id2label, predicted_class, label,
         [f"{p:.4f}" for p in probabilities[0].cpu().tolist()],
@@ -494,14 +510,9 @@ def classify_with_model(audio: np.ndarray, sr: int) -> Tuple[str, float]:
     # The primary model (shivam-2211/voice-detection-model) was trained with
     # inverted label semantics: its class-0 output actually corresponds to
     # REAL/human audio and class-1 to FAKE/AI-generated, despite the config
-    # claiming 0=FAKE and 1=REAL.  We detect this model by name and flip.
-    invert_labels = False
-    model_name_lower = getattr(model.config, '_name_or_path', '').lower()
-    if 'shivam-2211' in model_name_lower or 'voice-detection-model' in model_name_lower:
-        invert_labels = True
-        logger.info("Detected primary model with inverted training labels — flipping mapping")
-
-    if invert_labels:
+    # claiming 0=FAKE and 1=REAL.  Detected once at load time via
+    # _detect_label_inversion().
+    if _invert_labels:
         # Flip: treat model class-0 as REAL, class-1 as FAKE
         if predicted_class == 0:
             classification = "HUMAN"
