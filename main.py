@@ -866,6 +866,9 @@ def build_explainability_payload(
     acoustic_anomaly: float,
     risk_score: int = 0,
     delta_boost: int = 0,
+    voice_classification: str = "UNCERTAIN",
+    voice_confidence: float = 0.0,
+    authenticity_score: float = 50.0,
 ) -> RealTimeExplainability:
     """Build explicit explainability signals and concise summary."""
     if has_language_signals:
@@ -912,8 +915,15 @@ def build_explainability_payload(
         ),
     ]
 
+    # Build top indicators from actual detection signals
     indicators: List[str] = []
-    if acoustic_anomaly >= 60:
+    if voice_classification == "AI_GENERATED":
+        indicators.append("ai_voice_detected")
+        if voice_confidence >= 0.90:
+            indicators.append("high_confidence_synthetic")
+    if authenticity_score < 40:
+        indicators.append("low_authenticity_score")
+    if acoustic_anomaly >= 45:
         indicators.append("acoustic_anomaly_detected")
     indicators.extend(behaviour_signals)
     indicators.extend(keyword_hits[:3])
@@ -1171,6 +1181,9 @@ def build_risk_update(
         acoustic_anomaly=acoustic_anomaly,
         risk_score=risk_score,
         delta_boost=delta_boost,
+        voice_classification=classification,
+        voice_confidence=confidence,
+        authenticity_score=authenticity,
     )
 
     return {
