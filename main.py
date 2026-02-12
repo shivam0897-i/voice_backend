@@ -11,6 +11,7 @@ import uuid
 import time
 import json
 import io
+import hmac
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from typing import Optional, Any, Dict, List
@@ -85,6 +86,7 @@ class SessionState:
 
 SESSION_STORE: Dict[str, SessionState] = {}
 SESSION_LOCK = asyncio.Lock()
+SESSION_LOCKS: Dict[str, asyncio.Lock] = {}  # Per-session locks (M1)
 SESSION_STORE_BACKEND_ACTIVE = "memory"
 REDIS_CLIENT: Any = None
 ASR_INFLIGHT_TASKS: set[asyncio.Task] = set()
@@ -248,7 +250,7 @@ def warmup_audio_pipeline() -> None:
         warm_audio = np.zeros(16000, dtype=np.float32)
         wav_buffer = io.BytesIO()
         sf.write(wav_buffer, warm_audio, 16000, format="WAV", subtype="PCM_16")
-        load_audio_from_bytes(wav_buffer.getvalue(), 22050, "wav")
+        load_audio_from_bytes(wav_buffer.getvalue(), 16000, "wav")
         logger.info("Audio pipeline warm-up complete")
     except Exception as exc:
         logger.warning("Audio pipeline warm-up skipped: %s", exc)
@@ -295,6 +297,32 @@ if settings.SPACE_ID:
     logger.info(f"Running on HuggingFace Spaces: {settings.SPACE_ID}")
 
 
+def get_session_lock(session_id: str) -> asyncio.Lock:
+    """Return a per-session lock, creating one if needed (M1 fix)."""
+    if session_id not in SESSION_LOCKS:
+        SESSION_LOCKS[session_id] = asyncio.Lock()
+    return SESSION_LOCKS[session_id]
+
+
+async def _periodic_session_purge(interval: int = 60) -> None:
+    """Background task: purge expired sessions every *interval* seconds (M2 fix)."""
+    while True:
+        try:
+            await asyncio.sleep(interval)
+            async with SESSION_LOCK:
+                removed = purge_expired_sessions()
+                # Also clean up per-session locks for removed sessions
+                stale_lock_keys = [k for k in SESSION_LOCKS if k not in SESSION_STORE]
+                for k in stale_lock_keys:
+                    del SESSION_LOCKS[k]
+            if removed:
+                logger.info("Periodic purge removed %d expired session(s)", removed)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("Periodic purge error: %s", exc)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifespan events."""
@@ -312,8 +340,16 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.warning("Startup warm-ups encountered an issue: %s", exc)
 
+    # Background periodic purge task (M2 fix: avoid purging on every request)
+    purge_task = asyncio.create_task(_periodic_session_purge())
+
     yield
     # Shutdown
+    purge_task.cancel()
+    try:
+        await purge_task
+    except asyncio.CancelledError:
+        pass
     logger.info("Shutting down...")
 
 
@@ -340,10 +376,15 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 # Middleware configuration
 # CORS
 # Note: Set ALLOWED_ORIGINS env var in production
+# L2 fix: disable credentials for wildcard origins (browser ignores Set-Cookie anyway)
+_cors_origins = settings.ALLOWED_ORIGINS
+_cors_credentials = "*" not in _cors_origins
+if not _cors_credentials:
+    logger.warning("CORS allow_origins='*' — credentials disabled. Set ALLOWED_ORIGINS for production.")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.ALLOWED_ORIGINS,
-    allow_credentials=True,
+    allow_origins=_cors_origins,
+    allow_credentials=_cors_credentials,
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["Content-Type", "x-api-key", "Authorization"],
 )
@@ -396,8 +437,8 @@ async def log_requests(request: Request, call_next):
 class VoiceDetectionRequest(BaseModel):
     """Request body for voice detection."""
     language: str = Field(default="Auto", description="Language hint (Auto, English, Hindi, Hinglish, Tamil, Malayalam, Telugu). Defaults to auto-detect.")
-    audioFormat: str = Field(default="mp3", description="Audio format (must be mp3)")
-    audioBase64: str = Field(..., description="Base64-encoded MP3 audio")
+    audioFormat: str = Field(default="wav", description="Audio format (mp3, wav, flac, ogg, m4a, mp4, webm)")
+    audioBase64: str = Field(..., description="Base64-encoded audio data")
 
     @field_validator('audioBase64')
     @classmethod
@@ -452,7 +493,7 @@ class SessionStartResponse(BaseModel):
 
 class SessionChunkRequest(BaseModel):
     """Audio chunk request for real-time analysis."""
-    audioFormat: str = Field(default="mp3", description="Audio format (must be one of supported formats)")
+    audioFormat: str = Field(default="wav", description="Audio format (mp3, wav, flac, ogg, m4a, mp4, webm)")
     audioBase64: str = Field(..., description="Base64-encoded audio chunk")
     language: Optional[str] = Field(default=None, description="Optional override. Defaults to session language")
 
@@ -1117,6 +1158,33 @@ def build_risk_update(
             risk_score = min(risk_score, 79)
             behaviour_signals.append("risk_dampened_no_prior_high")
 
+    # ── L3 fix: First-chunk guard ──────────────────────────────────────
+    # The very first chunk often contains connection noise / silence.
+    # Cap its risk at 60 (MEDIUM) so one noisy handshake doesn't set
+    # the session trajectory high — UNLESS there's a strong positive
+    # signal (AI voice, high acoustic anomaly, or fraud keywords).
+    if _chunks_processed == 0 and risk_score > 60:
+        has_strong_signal = (
+            (classification == "AI_GENERATED" and confidence >= 0.80)
+            or acoustic_anomaly >= 60
+            or keyword_score >= 40
+            or semantic_score >= 40
+        )
+        if not has_strong_signal:
+            risk_score = 60
+            behaviour_signals.append("first_chunk_capped")
+
+    # ── M4 fix: Cumulative risk escalation for sustained moderate signals ──
+    # If 3+ of the last 5 chunks scored ≥40 AND the current chunk also
+    # scores ≥40, apply a cumulative boost (3 pts per recent moderate chunk,
+    # max +15). This ensures sustained low-grade fraud eventually triggers alerts.
+    if len(_risk_history) >= 3 and risk_score >= 40:
+        recent_moderate = sum(1 for s in _risk_history[-5:] if s >= 40)
+        if recent_moderate >= 3:
+            cumulative_boost = min(15, recent_moderate * 3)
+            risk_score = min(100, risk_score + cumulative_boost)
+            behaviour_signals.append("sustained_moderate_risk")
+
     # ── P2b: Sustained AI voice escalation ───────────────────────────
     # Instead of a flat floor at 70, escalate based on how many chunks
     # have been classified as AI.  floor = 70 + min(20, ai_chunks * 5)
@@ -1305,7 +1373,7 @@ async def process_audio_chunk(
     decode_ms = (time.perf_counter() - decode_start) * 1000
 
     load_start = time.perf_counter()
-    audio, sr = await asyncio.to_thread(load_audio_from_bytes, audio_bytes, 22050, chunk_request.audioFormat)
+    audio, sr = await asyncio.to_thread(load_audio_from_bytes, audio_bytes, 16000, chunk_request.audioFormat)
     load_ms = (time.perf_counter() - load_start) * 1000
 
     duration_sec = len(audio) / sr
@@ -1421,7 +1489,6 @@ async def process_audio_chunk(
 
     # Read-only session snapshot for scoring and optional LLM gating.
     async with SESSION_LOCK:
-        purge_expired_sessions()
         session = get_session_state(session_id)
         if session is None:
             raise HTTPException(
@@ -1468,7 +1535,6 @@ async def process_audio_chunk(
         )
 
     async with SESSION_LOCK:
-        purge_expired_sessions()
         session = get_session_state(session_id)
         if session is None:
             raise HTTPException(
@@ -1647,8 +1713,8 @@ async def verify_api_key(x_api_key: str = Security(api_key_header)) -> str:
             status_code=401,
             detail={"status": "error", "message": "Missing API key. Include 'x-api-key' header."}
         )
-    if x_api_key != settings.API_KEY:
-        logger.warning(f"API request with invalid key: {x_api_key[:8]}...")
+    if not hmac.compare_digest(x_api_key, settings.API_KEY):
+        logger.warning("API request with invalid key: ***%s", x_api_key[-4:] if len(x_api_key) >= 4 else "****")
         raise HTTPException(
             status_code=401,
             detail={"status": "error", "message": "Invalid API key"}
@@ -1659,7 +1725,9 @@ async def verify_api_key(x_api_key: str = Security(api_key_header)) -> str:
 def verify_websocket_api_key(websocket: WebSocket) -> bool:
     """Validate API key for websocket connections."""
     key = websocket.headers.get("x-api-key") or websocket.query_params.get("api_key")
-    return key == settings.API_KEY
+    if key is None:
+        return False
+    return hmac.compare_digest(key, settings.API_KEY)
 
 
 # Routes
@@ -1698,10 +1766,6 @@ async def start_realtime_session(
     started_at = utc_now_iso()
 
     async with SESSION_LOCK:
-        purged = purge_expired_sessions()
-        if purged:
-            logger.info("Retention purge removed %s expired sessions", purged)
-
         session_state = SessionState(
             session_id=session_id,
             language=session_request.language,
@@ -1730,7 +1794,6 @@ async def analyze_realtime_chunk(
     request_id = getattr(request.state, "request_id", f"sess-{session_id[:8]}")
 
     async with SESSION_LOCK:
-        purge_expired_sessions()
         session = get_session_state(session_id)
         if session is None:
             raise HTTPException(
@@ -1754,12 +1817,13 @@ async def analyze_realtime_chunk(
 @app.websocket("/api/voice-detection/v1/session/{session_id}/stream")
 async def stream_realtime_session(websocket: WebSocket, session_id: str):
     """WebSocket endpoint for continuous chunk-based analysis."""
-    if not verify_websocket_api_key(websocket):
-        await websocket.close(code=1008, reason="Invalid API key")
-        return
+    # L4 fix: accept auth via query param (legacy) OR first-message auth
+    has_query_key = verify_websocket_api_key(websocket)
+    if not has_query_key:
+        # No query-param key — accept connection and require first-message auth
+        pass
 
     async with SESSION_LOCK:
-        purge_expired_sessions()
         session = get_session_state(session_id)
         if session is None:
             await websocket.close(code=1008, reason="Session not found or expired")
@@ -1771,10 +1835,49 @@ async def stream_realtime_session(websocket: WebSocket, session_id: str):
 
     await websocket.accept()
     request_id = f"ws-{session_id[:8]}"
+    ws_start = time.time()
+
+    # L4 fix: if no query-param key, require first-message auth
+    if not has_query_key:
+        try:
+            auth_msg = await asyncio.wait_for(websocket.receive_json(), timeout=10.0)
+        except (asyncio.TimeoutError, Exception):
+            await websocket.close(code=1008, reason="Auth timeout")
+            return
+        if auth_msg.get("type") != "auth" or not auth_msg.get("api_key"):
+            await websocket.close(code=1008, reason="Invalid auth message")
+            return
+        expected = settings.API_KEY
+        provided = str(auth_msg["api_key"])
+        if expected is None or not hmac.compare_digest(expected, provided):
+            await websocket.close(code=1008, reason="Invalid API key")
+            return
 
     try:
         while True:
-            payload = await websocket.receive_json()
+            # M8 fix: enforce max connection duration
+            elapsed = time.time() - ws_start
+            if elapsed >= settings.WS_MAX_DURATION_SECONDS:
+                await websocket.send_json({
+                    "status": "error",
+                    "message": f"WebSocket max duration ({settings.WS_MAX_DURATION_SECONDS}s) exceeded"
+                })
+                await websocket.close(code=1000, reason="Max duration exceeded")
+                break
+
+            # M8 fix: enforce idle timeout
+            try:
+                payload = await asyncio.wait_for(
+                    websocket.receive_json(),
+                    timeout=settings.WS_IDLE_TIMEOUT_SECONDS
+                )
+            except asyncio.TimeoutError:
+                await websocket.send_json({
+                    "status": "error",
+                    "message": f"Idle timeout ({settings.WS_IDLE_TIMEOUT_SECONDS}s) — no data received"
+                })
+                await websocket.close(code=1000, reason="Idle timeout")
+                break
             try:
                 chunk_request = SessionChunkRequest.model_validate(payload)
             except ValidationError as e:
@@ -1805,7 +1908,6 @@ async def get_session_summary(
 ):
     """Return current summary for a real-time session."""
     async with SESSION_LOCK:
-        purge_expired_sessions()
         session = get_session_state(session_id)
         if session is None:
             raise HTTPException(
@@ -1830,7 +1932,6 @@ async def get_session_alerts(
         )
 
     async with SESSION_LOCK:
-        purge_expired_sessions()
         session = get_session_state(session_id)
         if session is None:
             raise HTTPException(
@@ -1868,7 +1969,6 @@ async def end_realtime_session(
 ):
     """Mark a session as ended and return final summary."""
     async with SESSION_LOCK:
-        purge_expired_sessions()
         session = get_session_state(session_id)
         if session is None:
             raise HTTPException(
@@ -1918,7 +2018,7 @@ async def detect_voice(
         # Step 2: Load audio (async - runs in thread pool)
         logger.info(f"[{request_id}]   -> Loading audio... (decode took {decode_time:.0f}ms)")
         load_start = time.perf_counter()
-        audio, sr = await asyncio.to_thread(load_audio_from_bytes, audio_bytes, 22050, voice_request.audioFormat)
+        audio, sr = await asyncio.to_thread(load_audio_from_bytes, audio_bytes, 16000, voice_request.audioFormat)
         load_time = (time.perf_counter() - load_start) * 1000
         
         # Step 3: ML Analysis (async - runs in thread pool, CPU-bound)

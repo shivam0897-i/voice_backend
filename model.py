@@ -18,6 +18,26 @@ logger = logging.getLogger(__name__)
 warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
 
+# ── Heuristic thresholds (M7 fix: centralised for easy tuning) ──────
+HEURISTIC_THRESHOLDS = {
+    # Pitch scoring
+    "pitch_optimal_stability": float(os.getenv("PITCH_OPTIMAL_STABILITY", "0.20")),
+    "pitch_stability_range": float(os.getenv("PITCH_STABILITY_RANGE", "0.20")),
+    "pitch_optimal_jitter": float(os.getenv("PITCH_OPTIMAL_JITTER", "0.04")),
+    "pitch_jitter_range": float(os.getenv("PITCH_JITTER_RANGE", "0.05")),
+    # Spectral scoring
+    "spectral_optimal_entropy": float(os.getenv("SPECTRAL_OPTIMAL_ENTROPY", "5.8")),
+    "spectral_entropy_range": float(os.getenv("SPECTRAL_ENTROPY_RANGE", "2.5")),
+    "spectral_optimal_flatness": float(os.getenv("SPECTRAL_OPTIMAL_FLATNESS", "0.06")),
+    "spectral_flatness_range": float(os.getenv("SPECTRAL_FLATNESS_RANGE", "0.08")),
+    # Acoustic anomaly
+    "anomaly_flatness_threshold": float(os.getenv("ANOMALY_FLATNESS_THRESHOLD", "0.13")),
+    "anomaly_voiced_low": float(os.getenv("ANOMALY_VOICED_LOW", "0.35")),
+    "anomaly_voiced_high": float(os.getenv("ANOMALY_VOICED_HIGH", "0.95")),
+    "anomaly_hnr_low": float(os.getenv("ANOMALY_HNR_LOW", "6.0")),
+    "anomaly_hnr_high": float(os.getenv("ANOMALY_HNR_HIGH", "35.0")),
+}
+
 # Global model cache
 _model = None
 _processor = None
@@ -257,14 +277,14 @@ def _calculate_pitch_score(features: Dict[str, float]) -> float:
     
     # Human sweet-spot: stability ≈ 0.15-0.25 (natural micro-variation)
     # AI tends to be TOO stable (> 0.30) — penalise perfection.
-    optimal_stability = 0.20
-    stability_dev = abs(pitch_stability - optimal_stability) / 0.20
+    optimal_stability = HEURISTIC_THRESHOLDS["pitch_optimal_stability"]
+    stability_dev = abs(pitch_stability - optimal_stability) / HEURISTIC_THRESHOLDS["pitch_stability_range"]
     stability_score = max(0.0, min(100.0, 100.0 * (1.0 - stability_dev)))
     
     # Human jitter ≈ 0.02-0.06 (natural pitch wobble)
     # AI jitter often < 0.01 (too clean/monotone)
-    optimal_jitter = 0.04
-    jitter_dev = abs(jitter - optimal_jitter) / 0.05
+    optimal_jitter = HEURISTIC_THRESHOLDS["pitch_optimal_jitter"]
+    jitter_dev = abs(jitter - optimal_jitter) / HEURISTIC_THRESHOLDS["pitch_jitter_range"]
     jitter_score = max(0.0, min(100.0, 100.0 * (1.0 - jitter_dev)))
     
     return (stability_score * 0.6 + jitter_score * 0.4)
@@ -282,14 +302,14 @@ def _calculate_spectral_score(features: Dict[str, float]) -> float:
     # Human sweet-spot: entropy ≈ 5.0-6.5 (rich harmonic content)
     # AI can have extremely high entropy (uniform noise floor) or
     # very low entropy (monotone vocoder).
-    optimal_entropy = 5.8
-    entropy_dev = abs(entropy - optimal_entropy) / 2.5
+    optimal_entropy = HEURISTIC_THRESHOLDS["spectral_optimal_entropy"]
+    entropy_dev = abs(entropy - optimal_entropy) / HEURISTIC_THRESHOLDS["spectral_entropy_range"]
     entropy_score = max(0.0, min(100.0, 100.0 * (1.0 - entropy_dev)))
     
     # Human flatness ≈ 0.03-0.10 (varied spectral shape)
     # AI often has very low (< 0.02) or very high (> 0.15) flatness.
-    optimal_flatness = 0.06
-    flatness_dev = abs(flatness - optimal_flatness) / 0.08
+    optimal_flatness = HEURISTIC_THRESHOLDS["spectral_optimal_flatness"]
+    flatness_dev = abs(flatness - optimal_flatness) / HEURISTIC_THRESHOLDS["spectral_flatness_range"]
     flatness_score = max(0.0, min(100.0, 100.0 * (1.0 - flatness_dev)))
     
     return (entropy_score * 0.5 + flatness_score * 0.5)
@@ -321,21 +341,21 @@ def _calculate_acoustic_anomaly_score(features: Dict[str, float]) -> float:
     hnr_db = features.get("harmonic_noise_ratio_db", 14.0)
 
     digital_artifact_score = min(100.0, perfect_silence * 10000.0)
-    flatness_artifact_score = min(100.0, max(0.0, (spectral_flatness - 0.13) * 500.0))
+    flatness_artifact_score = min(100.0, max(0.0, (spectral_flatness - HEURISTIC_THRESHOLDS["anomaly_flatness_threshold"]) * 500.0))
     rolloff_score = min(100.0, max(0.0, (np.log10(rolloff_var + 1.0) - 3.8) * 45.0))
 
-    if voiced_ratio < 0.35:
-        voiced_ratio_score = min(100.0, (0.35 - voiced_ratio) * 180.0)
-    elif voiced_ratio > 0.95:
-        voiced_ratio_score = min(100.0, (voiced_ratio - 0.95) * 180.0)
+    if voiced_ratio < HEURISTIC_THRESHOLDS["anomaly_voiced_low"]:
+        voiced_ratio_score = min(100.0, (HEURISTIC_THRESHOLDS["anomaly_voiced_low"] - voiced_ratio) * 180.0)
+    elif voiced_ratio > HEURISTIC_THRESHOLDS["anomaly_voiced_high"]:
+        voiced_ratio_score = min(100.0, (voiced_ratio - HEURISTIC_THRESHOLDS["anomaly_voiced_high"]) * 180.0)
     else:
         voiced_ratio_score = 0.0
 
-    if hnr_db < 6.0:
-        hnr_score = min(100.0, (6.0 - hnr_db) * 8.0)
-    elif hnr_db > 35.0:
+    if hnr_db < HEURISTIC_THRESHOLDS["anomaly_hnr_low"]:
+        hnr_score = min(100.0, (HEURISTIC_THRESHOLDS["anomaly_hnr_low"] - hnr_db) * 8.0)
+    elif hnr_db > HEURISTIC_THRESHOLDS["anomaly_hnr_high"]:
         # Raised from 28 dB — clean human recordings regularly exceed 28 dB
-        hnr_score = min(100.0, (hnr_db - 35.0) * 4.0)
+        hnr_score = min(100.0, (hnr_db - HEURISTIC_THRESHOLDS["anomaly_hnr_high"]) * 4.0)
     else:
         hnr_score = 0.0
 

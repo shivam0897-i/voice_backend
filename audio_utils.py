@@ -22,7 +22,8 @@ AUDIO_MAGIC_BYTES = {
     b'RIFF': 'wav',          # WAV
     b'fLaC': 'flac',         # FLAC
     b'OggS': 'ogg',          # OGG
-    b'\x00\x00\x00': 'm4a',  # M4A/MP4 (ftyp box)
+    b'\x1a\x45\xdf\xa3': 'webm',  # WebM / Matroska container
+    # M4A/MP4 detected via ftyp at offset 4 (see validate_audio_content)
 }
 
 

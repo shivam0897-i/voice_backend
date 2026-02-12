@@ -58,3 +58,4 @@ test_valid.json
 
 # Helper/patch scripts
 _fix_*.py
+_test_*.py

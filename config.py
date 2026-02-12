@@ -36,10 +36,11 @@ class Settings(BaseSettings):
     # Audio Constraints
     MAX_AUDIO_SIZE_MB: int = 10
     SUPPORTED_LANGUAGES: List[str] = [
-        "Tamil", "English", "Hindi", "Malayalam", "Telugu"
+        "Auto", "English", "Hindi", "Hinglish", "Mixed",
+        "Tamil", "Malayalam", "Telugu"
     ]
     SUPPORTED_FORMATS: List[str] = [
-        "mp3", "wav", "flac", "ogg", "m4a", "mp4"
+        "mp3", "wav", "flac", "ogg", "m4a", "mp4", "webm"
     ]
 
     # ASR settings
@@ -54,7 +55,7 @@ class Settings(BaseSettings):
         description="Max realtime ASR duration per chunk before timeout fallback"
     )
     ASR_MAX_INFLIGHT_TASKS: int = Field(
-        default=1,
+        default=3,
         ge=1,
         le=8,
         description="Maximum concurrent ASR background tasks allowed to prevent thread pileups"
@@ -169,6 +170,16 @@ class Settings(BaseSettings):
     MASK_TRANSCRIPT_OUTPUT: bool = Field(
         default=True,
         description="Mask sensitive entities from transcript before returning response"
+    )
+
+    # WebSocket limits (M8 fix)
+    WS_MAX_DURATION_SECONDS: int = Field(
+        default=1800,
+        description="Maximum WebSocket connection duration in seconds (30 min)"
+    )
+    WS_IDLE_TIMEOUT_SECONDS: int = Field(
+        default=120,
+        description="Close WebSocket if no message received within this many seconds"
     )
 
     # Environment Specific

@@ -7,7 +7,13 @@ import re
 
 
 PHONE_PATTERN = re.compile(r"(?<!\d)(?:\+?91[-\s]?)?[6-9]\d{9}(?!\d)")
-UPI_PATTERN = re.compile(r"\b[a-zA-Z0-9._-]{2,}@[a-zA-Z]{2,}\b")
+# UPI IDs: must end with known UPI provider handles (ybl, okaxis, paytm, etc.)
+UPI_PATTERN = re.compile(
+    r"\b[a-zA-Z0-9._-]{2,}@(?:ybl|okaxis|okhdfcbank|okicici|oksbi|paytm|apl|upi"
+    r"|axl|ibl|sbi|icici|hdfcbank|axisbank|kotak|indus|unionbank|boi|pnb|freecharge"
+    r"|idfcbank|dbs|rbl|federal|yes|fino|jio|slice|groww|cred|amazonpay|phonepe)\b",
+    re.IGNORECASE,
+)
 ACCOUNT_OR_CARD_PATTERN = re.compile(r"(?<!\d)(?:\d[ -]?){9,19}(?!\d)")
 OTP_CONTEXT_PATTERN = re.compile(r"\b(otp|pin)\s*[:\-]?\s*(\d{4,8})\b", re.IGNORECASE)
 
