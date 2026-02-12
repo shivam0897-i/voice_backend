@@ -86,7 +86,7 @@ class Settings(BaseSettings):
         description="Optional local model path that takes priority when present"
     )
     REALTIME_LIGHTWEIGHT_AUDIO: bool = Field(
-        default=True,
+        default=False,
         description="Use lightweight audio analysis path for realtime chunk processing (set true for throughput-first mode)"
     )
     LEGACY_FALLBACK_RETURNS_UNCERTAIN: bool = Field(
