@@ -8,29 +8,39 @@ import string
 from typing import Any, Dict, List, Set
 
 # Baseline keywords that are language-agnostic or commonly spoken in English/Hinglish.
+# Includes romanised Hindi (Hinglish) variants since WhisperASR often transcribes
+# code-switched Hindi-English speech into Latin script.
 COMMON_FRAUD_KEYWORDS: Dict[str, Set[str]] = {
     "financial": {
         "bank account", "account", "credit card", "debit card", "loan", "khata",
+        "paisa", "paise", "rupees", "rupaya",
     },
     "payment": {
         "upi", "upi id", "gpay", "google pay", "phonepe", "paytm", "neft", "rtgs",
         "send money", "transfer money", "payment",
+        "paise bhejo", "paise transfer", "paise dalo", "bhugtan",
     },
     "authentication": {
         "otp", "pin", "password", "cvv", "verification code", "passcode",
+        "otp batao", "otp dena", "otp bhejo", "pin number",
     },
     "urgency": {
         "urgent", "immediately", "right now", "now", "last chance", "today only",
-        "abhi", "turant", "jaldi",
+        "abhi", "turant", "jaldi", "foran", "jaldi karo", "abhi karo",
+        "aakhri mauka", "aaj hi",
     },
     "threat": {
         "blocked", "suspended", "legal action", "police", "arrest", "freeze",
+        "band ho jayega", "block ho jayega", "kaamuki karwai", "giraftar",
+        "case hoga", "band kar denge",
     },
     "impersonation": {
         "rbi", "bank manager", "government", "income tax", "customs", "official",
+        "sarkari", "adhikari", "bank se bol raha", "government se",
     },
     "offer_lure": {
         "lottery", "prize", "winner", "cashback", "free", "reward",
+        "inaam", "muft", "jeet gaye", "badhai", "badhai ho",
     },
 }
 

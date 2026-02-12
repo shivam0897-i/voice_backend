@@ -23,6 +23,10 @@ LANGUAGE_TO_WHISPER = {
     "Hindi": "hi",
     "Malayalam": "ml",
     "Telugu": "te",
+    # Mixed-language: let Whisper auto-detect per segment (best for code-switching)
+    "Hinglish": None,
+    "Mixed": None,
+    "Auto": None,
 }
 
 
@@ -130,11 +134,18 @@ def transcribe_audio(audio: np.ndarray, sr: int, language: str) -> Dict[str, Any
 
         hinted = _run_transcribe(model, audio, language_code)
 
-        # Recovery path: if language hint produced no text, retry with auto-detect.
-        # This improves robustness for mixed-language/accented input.
-        if not hinted["transcript"]:
+        # Recovery path: if language hint produced no/poor text, retry with auto-detect.
+        # This improves robustness for mixed-language (Hinglish) and accented input.
+        needs_retry = (
+            not hinted["transcript"]
+            or (language_code is not None and hinted["confidence"] < 0.30)
+        )
+        if needs_retry:
             autodetect = _run_transcribe(model, audio, None)
-            if autodetect["transcript"]:
+            if autodetect["transcript"] and (
+                not hinted["transcript"]
+                or autodetect["confidence"] > hinted["confidence"]
+            ):
                 return {
                     "transcript": autodetect["transcript"],
                     "confidence": autodetect["confidence"],
