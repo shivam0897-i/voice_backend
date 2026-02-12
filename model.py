@@ -463,15 +463,35 @@ def classify_with_model(audio: np.ndarray, sr: int) -> Tuple[str, float]:
     label = id2label.get(predicted_class, 'UNKNOWN')
 
     logger.info(
-        "Model id2label=%s  predicted_class=%d  resolved_label=%s",
+        "Model id2label=%s  predicted_class=%d  resolved_label=%s  probs=%s",
         id2label, predicted_class, label,
+        [f"{p:.4f}" for p in probabilities[0].cpu().tolist()],
     )
 
-    # Normalize label
-    if label.upper() in ['FAKE', 'SPOOF', 'SYNTHETIC', 'AI']:
-        classification = "AI_GENERATED"
+    # ── Label interpretation ──
+    # The primary model (shivam-2211/voice-detection-model) was trained with
+    # inverted label semantics: its class-0 output actually corresponds to
+    # REAL/human audio and class-1 to FAKE/AI-generated, despite the config
+    # claiming 0=FAKE and 1=REAL.  We detect this model by name and flip.
+    invert_labels = False
+    model_name_lower = getattr(model.config, '_name_or_path', '').lower()
+    if 'shivam-2211' in model_name_lower or 'voice-detection-model' in model_name_lower:
+        invert_labels = True
+        logger.info("Detected primary model with inverted training labels — flipping mapping")
+
+    if invert_labels:
+        # Flip: treat model class-0 as REAL, class-1 as FAKE
+        if predicted_class == 0:
+            classification = "HUMAN"
+        else:
+            classification = "AI_GENERATED"
+        # confidence stays the same (model's own softmax output)
     else:
-        classification = "HUMAN"
+        # Standard mapping: use labels from config
+        if label.upper() in ['FAKE', 'SPOOF', 'SYNTHETIC', 'AI']:
+            classification = "AI_GENERATED"
+        else:
+            classification = "HUMAN"
     
     return classification, confidence
 
