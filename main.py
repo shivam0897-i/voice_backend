@@ -1294,7 +1294,7 @@ async def process_audio_chunk(
     # (e.g. a 1.6 s tail of synthetic speech flipping to HUMAN 99%).
     # When the session already has a confident AI classification, we
     # carry that forward instead of trusting a sub-second segment.
-    MIN_RELIABLE_DURATION = 1.5  # seconds
+    MIN_RELIABLE_DURATION = 2.0  # seconds
     if duration_sec < MIN_RELIABLE_DURATION:
         async with SESSION_LOCK:
             _sess = get_session_state(session_id)
