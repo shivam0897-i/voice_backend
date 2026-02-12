@@ -1,4 +1,4 @@
-﻿"""
+"""
 Configuration management using Pydantic Settings.
 """
 from pydantic_settings import BaseSettings
@@ -44,9 +44,9 @@ class Settings(BaseSettings):
 
     # ASR settings
     ASR_ENABLED: bool = Field(default=True, description="Enable speech-to-text analysis for realtime sessions")
-    ASR_MODEL_SIZE: str = Field(default="tiny", description="faster-whisper model size")
+    ASR_MODEL_SIZE: str = Field(default="base", description="faster-whisper model size")
     ASR_COMPUTE_TYPE: str = Field(default="int8", description="faster-whisper compute type")
-    ASR_BEAM_SIZE: int = Field(default=1, description="Beam size for ASR decoding")
+    ASR_BEAM_SIZE: int = Field(default=3, description="Beam size for ASR decoding")
     ASR_TIMEOUT_MS: int = Field(
         default=1200,
         ge=200,

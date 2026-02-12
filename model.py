@@ -231,29 +231,50 @@ def generate_explanation(
 
 
 def _calculate_pitch_score(features: Dict[str, float]) -> float:
-    """Calculate pitch naturalness score (0-100). Higher = more human-like."""
+    """Calculate pitch naturalness score (0-100). Higher = more human-like.
+    
+    Uses peaked scoring centred on the human sweet-spot so that both
+    extremes (too perfect = AI, too erratic = glitch) are penalised.
+    """
     pitch_stability = features.get("pitch_stability", 0.5)
     jitter = features.get("jitter", 0.05)
     
-    # Typical Human: stability 0.1-0.3, jitter 0.02-0.08
-    # Typical AI: stability < 0.1, jitter < 0.02
+    # Human sweet-spot: stability ≈ 0.15-0.25 (natural micro-variation)
+    # AI tends to be TOO stable (> 0.30) — penalise perfection.
+    optimal_stability = 0.20
+    stability_dev = abs(pitch_stability - optimal_stability) / 0.20
+    stability_score = max(0.0, min(100.0, 100.0 * (1.0 - stability_dev)))
     
-    stability_score = min(100, max(0, (pitch_stability - 0.05) / 0.25 * 100))
-    jitter_score = min(100, max(0, (jitter - 0.005) / 0.075 * 100))
+    # Human jitter ≈ 0.02-0.06 (natural pitch wobble)
+    # AI jitter often < 0.01 (too clean/monotone)
+    optimal_jitter = 0.04
+    jitter_dev = abs(jitter - optimal_jitter) / 0.05
+    jitter_score = max(0.0, min(100.0, 100.0 * (1.0 - jitter_dev)))
     
     return (stability_score * 0.6 + jitter_score * 0.4)
 
 
 def _calculate_spectral_score(features: Dict[str, float]) -> float:
-    """Calculate spectral naturalness score (0-100). Higher = more human-like."""
+    """Calculate spectral naturalness score (0-100). Higher = more human-like.
+    
+    Peaked scoring — too-uniform spectrum (low flatness, very high
+    entropy) is penalised as suspicious synthetic perfection.
+    """
     entropy = features.get("spectral_entropy", 5.0)
     flatness = features.get("spectral_flatness", 0.1)
     
-    # Typical Human: entropy 4.5-7, flatness 0.02-0.12
-    # Typical AI: entropy < 4.5, flatness > 0.12
+    # Human sweet-spot: entropy ≈ 5.0-6.5 (rich harmonic content)
+    # AI can have extremely high entropy (uniform noise floor) or
+    # very low entropy (monotone vocoder).
+    optimal_entropy = 5.8
+    entropy_dev = abs(entropy - optimal_entropy) / 2.5
+    entropy_score = max(0.0, min(100.0, 100.0 * (1.0 - entropy_dev)))
     
-    entropy_score = min(100, max(0, (entropy - 3.0) / 4.0 * 100))
-    flatness_score = min(100, max(0, (0.2 - flatness) / 0.18 * 100))
+    # Human flatness ≈ 0.03-0.10 (varied spectral shape)
+    # AI often has very low (< 0.02) or very high (> 0.15) flatness.
+    optimal_flatness = 0.06
+    flatness_dev = abs(flatness - optimal_flatness) / 0.08
+    flatness_score = max(0.0, min(100.0, 100.0 * (1.0 - flatness_dev)))
     
     return (entropy_score * 0.5 + flatness_score * 0.5)
 
@@ -296,8 +317,9 @@ def _calculate_acoustic_anomaly_score(features: Dict[str, float]) -> float:
 
     if hnr_db < 6.0:
         hnr_score = min(100.0, (6.0 - hnr_db) * 8.0)
-    elif hnr_db > 28.0:
-        hnr_score = min(100.0, (hnr_db - 28.0) * 4.0)
+    elif hnr_db > 35.0:
+        # Raised from 28 dB — clean human recordings regularly exceed 28 dB
+        hnr_score = min(100.0, (hnr_db - 35.0) * 4.0)
     else:
         hnr_score = 0.0
 

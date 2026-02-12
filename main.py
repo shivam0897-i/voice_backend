@@ -1,4 +1,4 @@
-﻿"""
+"""
 FastAPI application for AI-Generated Voice Detection.
 
 Endpoint: POST /api/voice-detection
@@ -546,6 +546,8 @@ class SessionSummaryResponse(BaseModel):
     alerts_triggered: int = 0
     max_risk_score: int = 0
     max_cpi: float = 0.0
+    risk_level: str = "LOW"
+    risk_label: str = "SAFE"
     final_call_label: str = "UNCERTAIN"
     final_voice_classification: str = "UNCERTAIN"
     final_voice_confidence: float = 0.0
@@ -554,6 +556,7 @@ class SessionSummaryResponse(BaseModel):
     voice_human_chunks: int = 0
     llm_checks_performed: int = 0
     risk_policy_version: str = settings.RISK_POLICY_VERSION
+    alert_history: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 class AlertHistoryItem(BaseModel):
@@ -970,8 +973,22 @@ def build_risk_update(
     language_analysis: Dict[str, Any],
     previous_score: Optional[int],
     llm_semantic: Optional[Dict[str, Any]] = None,
+    session_ai_context: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Build risk score, evidence and alert from model outputs and session trend."""
+    """Build risk score, evidence and alert from model outputs and session trend.
+
+    Args:
+        session_ai_context: Optional dict with session-level AI detection state:
+            - voice_ai_chunks (int): Number of chunks classified as AI so far
+            - max_ai_confidence (float): Highest AI confidence seen in session
+            - chunks_processed (int): Total chunks processed so far
+            - risk_history (list[int]): Previous risk scores in session
+    """
+    _ai_ctx = session_ai_context or {}
+    _voice_ai_chunks = int(_ai_ctx.get("voice_ai_chunks", 0))
+    _max_ai_conf = float(_ai_ctx.get("max_ai_confidence", 0.0))
+    _chunks_processed = int(_ai_ctx.get("chunks_processed", 0))
+    _risk_history: List[int] = list(_ai_ctx.get("risk_history", []))
     authenticity = float(result_features.get("authenticity_score", 50.0))
     acoustic_anomaly = float(result_features.get("acoustic_anomaly_score", 0.0))
     ml_fallback = bool(result_features.get("ml_fallback", 0.0))
@@ -1089,27 +1106,43 @@ def build_risk_update(
         delta_boost = int(delta * settings.RISK_DELTA_BOOST_FACTOR)
         risk_score = min(100, risk_score + delta_boost)
 
-    # ── AI voice risk floor ──────────────────────────────────────────
-    # When the model confidently detects a synthetic voice, the risk
-    # must never be diluted below HIGH (70) by zero-valued language
-    # signals.  Without this floor, a benign transcript activates
-    # multi-signal weighting (audio=45%) and drops a 100% AI
-    # detection to risk 45/MEDIUM/SPAM — misleading for judges & users.
-    if classification == "AI_GENERATED" and confidence >= 0.85:
-        risk_score = max(risk_score, 70)
+    # ── P2a: Risk dampening — prevent single-chunk LOW→CRITICAL ────
+    # If previous score was below 60 (LOW/MEDIUM) and new score jumps
+    # to CRITICAL (>=80), cap at 79 unless 2+ recent HIGH scores in
+    # the session history support the escalation.
+    if previous_score is not None and previous_score < 60 and risk_score >= 80:
+        recent_high = sum(1 for s in _risk_history[-5:] if s >= 60)
+        if recent_high < 2:
+            risk_score = min(risk_score, 79)
+            behaviour_signals.append("risk_dampened_no_prior_high")
 
+    # ── P2b: Sustained AI voice escalation ───────────────────────────
+    # Instead of a flat floor at 70, escalate based on how many chunks
+    # have been classified as AI.  floor = 70 + min(20, ai_chunks * 5)
+    # This means: 1 AI chunk → 75, 2 → 80, 3 → 85, 4+ → 90.
+    if classification == "AI_GENERATED" and confidence >= 0.85:
+        ai_floor = 70 + min(20, _voice_ai_chunks * 5)
+        risk_score = max(risk_score, ai_floor)
+        if _voice_ai_chunks >= 2:
+            behaviour_signals.append("sustained_ai_voice")
+
+    # ── P1: AI-voice-aware CPI ───────────────────────────────────────
+    # Add an AI-voice ratio component so CPI doesn't stay at 0 when
+    # the only signal is the model detecting synthetic voice.
+    _ai_ratio = (_voice_ai_chunks / max(1, _chunks_processed)) if _chunks_processed > 0 else 0.0
     if previous_score is None:
-        cpi = min(100.0, max(0.0, (behaviour_score * 0.35) + (semantic_score * 0.20)))
+        cpi = min(100.0, max(0.0,
+            (behaviour_score * 0.35)
+            + (semantic_score * 0.20)
+            + (_ai_ratio * _max_ai_conf * 40.0)
+        ))
     else:
-        cpi = min(
-            100.0,
-            max(
-                0.0,
-                (max(0, delta) * 3.2)
-                + (behaviour_score * 0.35)
-                + (semantic_score * 0.15),
-            ),
-        )
+        cpi = min(100.0, max(0.0,
+            (max(0, delta) * 3.2)
+            + (behaviour_score * 0.35)
+            + (semantic_score * 0.15)
+            + (_ai_ratio * _max_ai_conf * 40.0)
+        ))
     if cpi >= 70:
         behaviour_signals.append("cpi_spike_detected")
 
@@ -1142,6 +1175,17 @@ def build_risk_update(
         or cpi >= 70
         or any(signal in behaviour_signals for signal in strong_intent)
     )
+
+    # ── P5: First-chunk alert guard ──────────────────────────────────
+    # On the very first chunk (_chunks_processed == 0), suppress the
+    # alert unless CRITICAL (risk >= 80) or strong semantic intent.
+    # This prevents a single false-positive chunk from triggering an
+    # alert that will persist in the session history.
+    if alert_triggered and _chunks_processed == 0:
+        has_strong_intent = any(s in behaviour_signals for s in strong_intent)
+        if risk_level != "CRITICAL" and not has_strong_intent:
+            alert_triggered = False
+            behaviour_signals.append("first_chunk_alert_suppressed")
     alert_type = None
     severity = None
     reason_summary = None
@@ -1159,7 +1203,7 @@ def build_risk_update(
         severity = risk_level.lower()
         reasons: List[str] = []
         if keyword_hits:
-            reasons.append("fraud keywords detected")
+            reasons.append(f"fraud keywords detected ({', '.join(keyword_hits[:3])})")
         if semantic_score >= 45:
             reasons.append("coercive intent patterns detected")
         if behaviour_score >= 40:
@@ -1167,11 +1211,15 @@ def build_risk_update(
         if "repetition_loop" in behaviour_signals:
             reasons.append("repetition loop detected")
         if "rapid_risk_escalation" in behaviour_signals:
-            reasons.append("risk escalated rapidly across chunks")
+            reasons.append(f"risk escalated rapidly (+{delta} points)")
         if cpi >= 70:
-            reasons.append("conversational pressure index spiked")
-        if classification == "AI_GENERATED" and confidence >= 0.85:
-            reasons.append("AI-generated voice detected")
+            reasons.append(f"conversational pressure index spiked ({cpi:.0f})")
+        if "sustained_ai_voice" in behaviour_signals:
+            reasons.append(f"sustained AI-generated voice across {_voice_ai_chunks} chunks")
+        elif classification == "AI_GENERATED" and confidence >= 0.85:
+            reasons.append(f"AI-generated voice detected ({confidence:.0%} confidence)")
+        if "risk_dampened_no_prior_high" in behaviour_signals:
+            reasons.append("risk capped — awaiting corroboration from additional chunks")
         if not reasons:
             reasons.append("high-risk audio pattern detected")
         reason_summary = ". ".join(reasons).capitalize() + "."
@@ -1288,36 +1336,62 @@ async def process_audio_chunk(
         f"({analysis_result.confidence_score:.0%}) in {analyze_ms:.0f}ms"
     )
 
-    # ── Short-chunk guard ────────────────────────────────────────────
-    # Audio segments shorter than ~1.5 s give the classifier
-    # insufficient spectral context, leading to unreliable predictions
-    # (e.g. a 1.6 s tail of synthetic speech flipping to HUMAN 99%).
-    # When the session already has a confident AI classification, we
-    # carry that forward instead of trusting a sub-second segment.
+    # ── Short-chunk guard (bidirectional) ────────────────────────────
+    # Audio segments shorter than 2 s give the classifier insufficient
+    # spectral context, leading to unreliable predictions in both
+    # directions (e.g. a 1.6 s human tail flipping to AI 100%, or a
+    # short synthetic tail flipping to HUMAN 99%).  When the session
+    # already has a clear majority classification, we carry that
+    # forward instead of trusting a sub-2-second segment.
     MIN_RELIABLE_DURATION = 2.0  # seconds
     if duration_sec < MIN_RELIABLE_DURATION:
         async with SESSION_LOCK:
             _sess = get_session_state(session_id)
-            if (
-                _sess is not None
-                and _sess.voice_ai_chunks > 0
-                and _sess.max_voice_ai_confidence >= 0.85
-                and analysis_result.classification != "AI_GENERATED"
-            ):
-                logger.info(
-                    f"[{request_id}] Short chunk ({duration_sec:.2f}s < {MIN_RELIABLE_DURATION}s): "
-                    f"overriding {analysis_result.classification} → AI_GENERATED "
-                    f"(session has {_sess.voice_ai_chunks} prior AI chunks)"
-                )
-                analysis_result = AnalysisResult(
-                    classification="AI_GENERATED",
-                    confidence_score=_sess.max_voice_ai_confidence * 0.90,
-                    explanation=f"Short chunk ({duration_sec:.1f}s) — classification carried forward from session history.",
-                    features=analysis_result.features,
-                )
+            if _sess is not None and _sess.chunks_processed > 0:
+                # Case 1: Session is mostly AI → carry forward AI
+                if (
+                    _sess.voice_ai_chunks > _sess.voice_human_chunks
+                    and _sess.max_voice_ai_confidence >= 0.85
+                    and analysis_result.classification != "AI_GENERATED"
+                ):
+                    logger.info(
+                        f"[{request_id}] Short chunk ({duration_sec:.2f}s < {MIN_RELIABLE_DURATION}s): "
+                        f"overriding {analysis_result.classification} → AI_GENERATED "
+                        f"(session has {_sess.voice_ai_chunks} AI vs {_sess.voice_human_chunks} human chunks)"
+                    )
+                    analysis_result = AnalysisResult(
+                        classification="AI_GENERATED",
+                        confidence_score=_sess.max_voice_ai_confidence * 0.90,
+                        explanation=f"Short chunk ({duration_sec:.1f}s) — AI classification carried forward from session history.",
+                        features=analysis_result.features,
+                    )
+                # Case 2: Session is mostly HUMAN → carry forward HUMAN
+                elif (
+                    _sess.voice_human_chunks > _sess.voice_ai_chunks
+                    and _sess.final_voice_confidence >= 0.80
+                    and analysis_result.classification != "HUMAN"
+                ):
+                    logger.info(
+                        f"[{request_id}] Short chunk ({duration_sec:.2f}s < {MIN_RELIABLE_DURATION}s): "
+                        f"overriding {analysis_result.classification} → HUMAN "
+                        f"(session has {_sess.voice_human_chunks} human vs {_sess.voice_ai_chunks} AI chunks)"
+                    )
+                    analysis_result = AnalysisResult(
+                        classification="HUMAN",
+                        confidence_score=_sess.final_voice_confidence * 0.90,
+                        explanation=f"Short chunk ({duration_sec:.1f}s) — HUMAN classification carried forward from session history.",
+                        features=analysis_result.features,
+                    )
 
     asr_start = time.perf_counter()
-    asr_timeout_seconds = max(0.1, float(settings.ASR_TIMEOUT_MS) / 1000.0)
+    # Format-aware timeout: container formats (mp4, m4a, ogg, webm) need extra
+    # demux time vs raw audio formats (mp3, wav, flac).
+    _container_formats = {"mp4", "m4a", "ogg", "webm"}
+    _base_timeout_ms = float(settings.ASR_TIMEOUT_MS)
+    if chunk_request.audioFormat.lower() in _container_formats:
+        asr_timeout_seconds = max(0.1, (_base_timeout_ms * 2.5) / 1000.0)
+    else:
+        asr_timeout_seconds = max(0.1, _base_timeout_ms / 1000.0)
     asr_result = await transcribe_audio_guarded(
         audio=audio,
         sr=sr,
@@ -1360,6 +1434,13 @@ async def process_audio_chunk(
             )
         previous_score_snapshot = session.risk_history[-1] if session.risk_history else None
         next_chunk_index = session.chunks_processed + 1
+        # Snapshot session AI context under the lock for provisional scoring
+        _provisional_ai_ctx = {
+            "voice_ai_chunks": session.voice_ai_chunks,
+            "max_ai_confidence": session.max_voice_ai_confidence,
+            "chunks_processed": session.chunks_processed,
+            "risk_history": list(session.risk_history),
+        }
 
     provisional_scored = build_risk_update(
         analysis_result.features or {},
@@ -1367,6 +1448,7 @@ async def process_audio_chunk(
         analysis_result.confidence_score,
         language_result,
         previous_score_snapshot,
+        session_ai_context=_provisional_ai_ctx,
     )
 
     llm_semantic: Optional[Dict[str, Any]] = None
@@ -1416,6 +1498,12 @@ async def process_audio_chunk(
             language_result,
             previous_score,
             llm_semantic=llm_semantic,
+            session_ai_context={
+                "voice_ai_chunks": session.voice_ai_chunks,
+                "max_ai_confidence": session.max_voice_ai_confidence,
+                "chunks_processed": session.chunks_processed,
+                "risk_history": list(session.risk_history),
+            },
         )
 
         voice_classification = normalize_voice_classification(
@@ -1437,6 +1525,7 @@ async def process_audio_chunk(
             session.max_voice_ai_confidence = max(session.max_voice_ai_confidence, voice_confidence)
         elif voice_classification == "HUMAN":
             session.voice_human_chunks += 1
+            session.max_voice_human_confidence = max(session.max_voice_human_confidence, voice_confidence)
 
         # Use majority vote for session-level classification instead of last-chunk
         if session.voice_ai_chunks > session.voice_human_chunks:
@@ -1444,11 +1533,21 @@ async def process_audio_chunk(
             session.final_voice_confidence = session.max_voice_ai_confidence
         elif session.voice_human_chunks > session.voice_ai_chunks:
             session.final_voice_classification = "HUMAN"
-            session.final_voice_confidence = voice_confidence
+            session.final_voice_confidence = session.max_voice_human_confidence
         else:
             # Tie — use the latest chunk's decision
             session.final_voice_classification = voice_classification
             session.final_voice_confidence = voice_confidence
+
+        # ── P4: Reconcile final_call_label with majority vote ────────
+        # If the majority vote says HUMAN but the watermark-based label
+        # is FRAUD, downgrade to at most SPAM to avoid contradiction.
+        if session.final_voice_classification == "HUMAN" and session.final_call_label == "FRAUD":
+            session.final_call_label = "SPAM" if session.max_risk_score >= 35 else "SAFE"
+        # If majority says AI_GENERATED but label is SAFE, upgrade to
+        # at least SPAM so the label reflects the AI detection.
+        elif session.final_voice_classification == "AI_GENERATED" and session.final_call_label == "SAFE":
+            session.final_call_label = "SPAM"
 
         if scored["alert"].triggered:
             alert_obj = scored["alert"]
@@ -1462,6 +1561,7 @@ async def process_audio_chunk(
                 "reason_summary": alert_obj.reason_summary or "Fraud indicators detected.",
                 "recommended_action": alert_obj.recommended_action
                 or recommendation_for_level(scored["risk_level"], scored["model_uncertain"]),
+                "occurrences": 1,
             }
 
             last_alert = session.alert_history[-1] if session.alert_history else None
@@ -1474,6 +1574,7 @@ async def process_audio_chunk(
             if is_duplicate:
                 last_alert["timestamp"] = session.last_update
                 last_alert["risk_score"] = max(int(last_alert.get("risk_score", 0)), scored["risk_score"])
+                last_alert["occurrences"] = last_alert.get("occurrences", 1) + 1
             else:
                 session.alerts_triggered += 1
                 session.alert_history.append(alert_entry)
@@ -1504,6 +1605,8 @@ async def process_audio_chunk(
 
 def session_to_summary(session: SessionState) -> SessionSummaryResponse:
     """Convert session state to response model."""
+    resolved_level = map_score_to_level(session.max_risk_score)
+    resolved_label = map_level_to_label(resolved_level)
     return SessionSummaryResponse(
         status="success",
         session_id=session.session_id,
@@ -1515,6 +1618,8 @@ def session_to_summary(session: SessionState) -> SessionSummaryResponse:
         alerts_triggered=session.alerts_triggered,
         max_risk_score=session.max_risk_score,
         max_cpi=round(session.max_cpi, 1),
+        risk_level=resolved_level,
+        risk_label=resolved_label,
         final_call_label=session.final_call_label,
         final_voice_classification=session.final_voice_classification,
         final_voice_confidence=round(session.final_voice_confidence, 2),
@@ -1523,6 +1628,7 @@ def session_to_summary(session: SessionState) -> SessionSummaryResponse:
         voice_human_chunks=session.voice_human_chunks,
         llm_checks_performed=session.llm_checks_performed,
         risk_policy_version=settings.RISK_POLICY_VERSION,
+        alert_history=list(session.alert_history),
     )
 
 
