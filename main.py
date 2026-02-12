@@ -66,6 +66,7 @@ class SessionState:
     final_voice_classification: str = "UNCERTAIN"
     final_voice_confidence: float = 0.0
     max_voice_ai_confidence: float = 0.0
+    max_voice_human_confidence: float = 0.0
     voice_ai_chunks: int = 0
     voice_human_chunks: int = 0
     llm_checks_performed: int = 0
@@ -1606,7 +1607,7 @@ async def process_audio_chunk(
 def session_to_summary(session: SessionState) -> SessionSummaryResponse:
     """Convert session state to response model."""
     resolved_level = map_score_to_level(session.max_risk_score)
-    resolved_label = map_level_to_label(resolved_level)
+    resolved_label = map_level_to_label(resolved_level, model_uncertain=False)
     return SessionSummaryResponse(
         status="success",
         session_id=session.session_id,
