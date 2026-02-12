@@ -558,7 +558,7 @@ def classify_with_model(audio: np.ndarray, sr: int) -> Tuple[str, float]:
     return classification, confidence
 
 
-def analyze_voice(audio: np.ndarray, sr: int, language: str = "English", realtime: bool = False) -> AnalysisResult:
+def analyze_voice(audio: np.ndarray, sr: int, language: str = "English", realtime: bool = False, source: str = "file") -> AnalysisResult:
     """
     Analyze a voice sample and classify as AI-generated or Human.
     
@@ -629,7 +629,7 @@ def analyze_voice(audio: np.ndarray, sr: int, language: str = "English", realtim
     # Browser-mic audio typically has authenticity 34-60 and anomaly 40-78
     # (naturally higher noise floor and spectral irregularity). The
     # thresholds must reflect these real-world ranges.
-    if realtime and classification == "AI_GENERATED" and authenticity_score > 35:
+    if realtime and source == "mic" and classification == "AI_GENERATED" and authenticity_score > 35:
         # The higher the authenticity, the more we moderate.
         # authenticity 35 → no change.  authenticity 60 → cap at ~0.75
         # authenticity 80 → cap at ~0.55
@@ -659,6 +659,7 @@ def analyze_voice(audio: np.ndarray, sr: int, language: str = "English", realtim
     features["ml_confidence"] = ml_confidence
     features["ml_fallback"] = float(ml_fallback)
     features["realtime_heuristic_mode"] = float(fast_mode)
+    features["audio_source"] = source
 
     # Add computed high-level scores to features for API response.
     features["authenticity_score"] = round(authenticity_score, 1)

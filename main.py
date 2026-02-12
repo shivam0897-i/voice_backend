@@ -496,6 +496,7 @@ class SessionChunkRequest(BaseModel):
     audioFormat: str = Field(default="wav", description="Audio format (mp3, wav, flac, ogg, m4a, mp4, webm)")
     audioBase64: str = Field(..., description="Base64-encoded audio chunk")
     language: Optional[str] = Field(default=None, description="Optional override. Defaults to session language")
+    source: Optional[str] = Field(default="file", description="Audio source: 'mic' for browser microphone, 'file' for uploaded file")
 
     @field_validator("audioBase64")
     @classmethod
@@ -1035,6 +1036,7 @@ def build_risk_update(
     acoustic_anomaly = float(result_features.get("acoustic_anomaly_score", 0.0))
     ml_fallback = bool(result_features.get("ml_fallback", 0.0))
     realtime_heuristic_mode = bool(result_features.get("realtime_heuristic_mode", 0.0))
+    _audio_source = str(result_features.get("audio_source", "file"))
     normalized_classification = str(classification or "").upper()
     low_confidence_uncertain = bool(
         normalized_classification != "AI_GENERATED"
@@ -1091,7 +1093,9 @@ def build_risk_update(
         # When authenticity (signal forensics) contradicts AI classification,
         # dampen the audio_score.  Browser-mic audio typically has
         # authenticity 34-60, so the threshold starts low.
-        if authenticity > 35:
+        # IMPORTANT: Only dampen for mic source — file uploads should trust
+        # the model classification.
+        if authenticity > 35 and _audio_source == "mic":
             # Scale factor: authenticity 35 → 1.0 (no change),
             #               authenticity 55 → 0.80,
             #               authenticity 80 → 0.55
@@ -1100,10 +1104,12 @@ def build_risk_update(
     else:
         authenticity_audio_score = int(max(0, min(100, (50.0 - authenticity) * 1.2)))
         # Browser mic naturally has higher spectral anomaly (40-78) due to
-        # noise floor and frequency response. Use 0.55 multiplier (was 0.70)
-        # so anomaly 60 → score 33 instead of 42, keeping HUMAN chunks in
-        # LOW risk range where they belong.
-        anomaly_audio_score = int(max(0.0, min(100.0, acoustic_anomaly * 0.55)))
+        # noise floor and frequency response. Use 0.55 multiplier for mic
+        # (was 0.70) so anomaly 60 → score 33 instead of 42, keeping
+        # HUMAN chunks in LOW risk range where they belong.
+        # File uploads use standard 0.90 multiplier.
+        _anomaly_mult = 0.55 if _audio_source == "mic" else 0.90
+        anomaly_audio_score = int(max(0.0, min(100.0, acoustic_anomaly * _anomaly_mult)))
         audio_score = max(authenticity_audio_score, anomaly_audio_score)
 
     has_language_signals = bool(transcript) or keyword_score > 0 or semantic_score > 0 or behaviour_score > 0
@@ -1399,7 +1405,7 @@ async def process_audio_chunk(
 
     analyze_start = time.perf_counter()
     try:
-        analysis_result = await asyncio.to_thread(analyze_voice, audio, sr, chunk_language, True)
+        analysis_result = await asyncio.to_thread(analyze_voice, audio, sr, chunk_language, True, chunk_request.source or "file")
     except Exception as exc:
         logger.warning("[%s] Realtime model path failed: %s; using conservative fallback", request_id, exc)
         analysis_result = AnalysisResult(
