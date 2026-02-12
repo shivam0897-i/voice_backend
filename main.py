@@ -1539,6 +1539,7 @@ async def health_check():
     }
 
 
+@app.post("/v1/session/start", response_model=SessionStartResponse, include_in_schema=False)
 @app.post("/api/voice-detection/v1/session/start", response_model=SessionStartResponse)
 async def start_realtime_session(
     session_request: SessionStartRequest,
@@ -1571,6 +1572,7 @@ async def start_realtime_session(
     )
 
 
+@app.post("/v1/session/{session_id}/chunk", response_model=RealTimeUpdateResponse, include_in_schema=False)
 @app.post("/api/voice-detection/v1/session/{session_id}/chunk", response_model=RealTimeUpdateResponse)
 async def analyze_realtime_chunk(
     request: Request,
@@ -1602,6 +1604,7 @@ async def analyze_realtime_chunk(
         raise HTTPException(status_code=400, detail={"status": "error", "message": str(e)}) from e
 
 
+@app.websocket("/v1/session/{session_id}/stream")
 @app.websocket("/api/voice-detection/v1/session/{session_id}/stream")
 async def stream_realtime_session(websocket: WebSocket, session_id: str):
     """WebSocket endpoint for continuous chunk-based analysis."""
@@ -1648,6 +1651,7 @@ async def stream_realtime_session(websocket: WebSocket, session_id: str):
         logger.info(f"[{request_id}] WebSocket disconnected")
 
 
+@app.get("/v1/session/{session_id}/summary", response_model=SessionSummaryResponse, include_in_schema=False)
 @app.get("/api/voice-detection/v1/session/{session_id}/summary", response_model=SessionSummaryResponse)
 async def get_session_summary(
     session_id: str,
@@ -1665,6 +1669,7 @@ async def get_session_summary(
         return session_to_summary(session)
 
 
+@app.get("/v1/session/{session_id}/alerts", response_model=AlertHistoryResponse, include_in_schema=False)
 @app.get("/api/voice-detection/v1/session/{session_id}/alerts", response_model=AlertHistoryResponse)
 async def get_session_alerts(
     session_id: str,
@@ -1696,6 +1701,7 @@ async def get_session_alerts(
         )
 
 
+@app.get("/v1/privacy/retention-policy", response_model=RetentionPolicyResponse, include_in_schema=False)
 @app.get("/api/voice-detection/v1/privacy/retention-policy", response_model=RetentionPolicyResponse)
 async def get_retention_policy(api_key: str = Depends(verify_api_key)):
     """Return explicit privacy defaults for raw audio and session-derived data."""
@@ -1708,6 +1714,7 @@ async def get_retention_policy(api_key: str = Depends(verify_api_key)):
     )
 
 
+@app.post("/v1/session/{session_id}/end", response_model=SessionSummaryResponse, include_in_schema=False)
 @app.post("/api/voice-detection/v1/session/{session_id}/end", response_model=SessionSummaryResponse)
 async def end_realtime_session(
     session_id: str,
