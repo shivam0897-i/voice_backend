@@ -395,7 +395,7 @@ async def log_requests(request: Request, call_next):
 # Request/Response Models
 class VoiceDetectionRequest(BaseModel):
     """Request body for voice detection."""
-    language: str = Field(..., description="Language: Tamil, English, Hindi, Malayalam, or Telugu")
+    language: str = Field(default="Auto", description="Language hint (Auto, English, Hindi, Hinglish, Tamil, Malayalam, Telugu). Defaults to auto-detect.")
     audioFormat: str = Field(default="mp3", description="Audio format (must be mp3)")
     audioBase64: str = Field(..., description="Base64-encoded MP3 audio")
 
@@ -438,7 +438,7 @@ class ErrorResponse(BaseModel):
 
 class SessionStartRequest(BaseModel):
     """Request body for creating a real-time analysis session."""
-    language: str = Field(..., description="Language: Tamil, English, Hindi, Malayalam, or Telugu")
+    language: str = Field(default="Auto", description="Language hint (Auto, English, Hindi, Hinglish, Tamil, Malayalam, Telugu). Defaults to auto-detect.")
 
 
 class SessionStartResponse(BaseModel):
