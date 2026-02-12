@@ -620,10 +620,15 @@ def analyze_voice(audio: np.ndarray, sr: int, language: str = "English", realtim
     # This prevents a poorly-calibrated model from steamrolling the
     # heuristic evidence.  The model was fine-tuned on curated datasets
     # and can misclassify real browser-mic audio as synthetic.
-    if classification == "AI_GENERATED" and authenticity_score > 50:
+    #
+    # Browser-mic audio typically has authenticity 34-60 and anomaly 40-78
+    # (naturally higher noise floor and spectral irregularity). The
+    # thresholds must reflect these real-world ranges.
+    if classification == "AI_GENERATED" and authenticity_score > 35:
         # The higher the authenticity, the more we moderate.
-        # authenticity 50 → no change.  authenticity 80 → cap at ~0.72
-        moderation_factor = max(0.50, 1.0 - (authenticity_score - 50) / 100.0)
+        # authenticity 35 → no change.  authenticity 60 → cap at ~0.75
+        # authenticity 80 → cap at ~0.55
+        moderation_factor = max(0.50, 1.0 - (authenticity_score - 35) / 100.0)
         if ml_confidence > moderation_factor:
             logger.info(
                 "Authenticity cross-check: moderated AI confidence %.2f → %.2f "
@@ -632,10 +637,11 @@ def analyze_voice(audio: np.ndarray, sr: int, language: str = "English", realtim
                 authenticity_score, acoustic_anomaly_score,
             )
             ml_confidence = moderation_factor
-        # If authenticity is very high (>65) and anomaly is low (<40),
-        # override the classification entirely — the signal evidence
-        # strongly contradicts the model.
-        if authenticity_score > 65 and acoustic_anomaly_score < 40:
+        # If authenticity indicates human-like features (>50) and anomaly
+        # is not extreme (<55), override the classification — the signal
+        # evidence strongly contradicts the model. Browser mic audio
+        # naturally has anomaly 40-60, so the threshold must accommodate.
+        if authenticity_score > 50 and acoustic_anomaly_score < 55:
             logger.info(
                 "Authenticity override: flipping AI_GENERATED → HUMAN "
                 "(authenticity=%.1f, anomaly=%.1f, original_conf=%.2f)",

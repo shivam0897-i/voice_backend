@@ -1089,16 +1089,20 @@ def build_risk_update(
         anomaly_audio = int(max(0.0, min(100.0, acoustic_anomaly * 0.85)))
         audio_score = max(confidence_audio, anomaly_audio)
         # When authenticity (signal forensics) contradicts AI classification,
-        # dampen the audio_score.  High authenticity means the heuristic
-        # features look human-like — the model may be wrong.
-        if authenticity > 50:
-            # Scale factor: authenticity 50 → 1.0 (no change),
-            #               authenticity 80 → 0.70,  authenticity 100 → 0.50
-            auth_dampen = max(0.50, 1.0 - (authenticity - 50) / 100.0)
+        # dampen the audio_score.  Browser-mic audio typically has
+        # authenticity 34-60, so the threshold starts low.
+        if authenticity > 35:
+            # Scale factor: authenticity 35 → 1.0 (no change),
+            #               authenticity 55 → 0.80,
+            #               authenticity 80 → 0.55
+            auth_dampen = max(0.50, 1.0 - (authenticity - 35) / 100.0)
             audio_score = int(round(audio_score * auth_dampen))
     else:
         authenticity_audio_score = int(max(0, min(100, (50.0 - authenticity) * 1.2)))
-        anomaly_audio_score = int(max(0.0, min(100.0, acoustic_anomaly * 0.90)))
+        # Browser mic naturally has higher spectral anomaly (40-78) due to
+        # noise floor and frequency response. Use 0.70 multiplier (was 0.90)
+        # so anomaly 60 → score 42 instead of 54.
+        anomaly_audio_score = int(max(0.0, min(100.0, acoustic_anomaly * 0.70)))
         audio_score = max(authenticity_audio_score, anomaly_audio_score)
 
     has_language_signals = bool(transcript) or keyword_score > 0 or semantic_score > 0 or behaviour_score > 0
