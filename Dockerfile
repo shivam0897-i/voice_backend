@@ -6,12 +6,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y \
     libsndfile1 \
     ffmpeg \
-    git \
-    git-lfs \
     && rm -rf /var/lib/apt/lists/*
-
-# Initialize git lfs
-RUN git lfs install
 
 # Copy requirements first for better caching
 COPY requirements.txt .
@@ -36,5 +31,5 @@ WORKDIR /app
 # Hugging Face Spaces uses port 7860
 EXPOSE 7860
 
-# Run the application
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "7860"]
+# Run the application (2 workers for concurrent request handling)
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "7860", "--workers", "2"]

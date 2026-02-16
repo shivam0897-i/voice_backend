@@ -1,0 +1,50 @@
+{
+  "finalScore": 100,
+  "totalFiles": 5,
+  "scorePerFile": 20.0,
+  "successfulClassifications": 5,
+  "wrongClassifications": 0,
+  "failedTests": 0,
+  "fileResults": [
+    {
+      "fileIndex": 0,
+      "status": "success",
+      "matched": true,
+      "score": 20.0,
+      "actualClassification": "AI_GENERATED",
+      "confidenceScore": 0.99
+    },
+    {
+      "fileIndex": 1,
+      "status": "success",
+      "matched": true,
+      "score": 20.0,
+      "actualClassification": "HUMAN",
+      "confidenceScore": 0.99
+    },
+    {
+      "fileIndex": 2,
+      "status": "success",
+      "matched": true,
+      "score": 20.0,
+      "actualClassification": "AI_GENERATED",
+      "confidenceScore": 0.99
+    },
+    {
+      "fileIndex": 3,
+      "status": "success",
+      "matched": true,
+      "score": 20.0,
+      "actualClassification": "HUMAN",
+      "confidenceScore": 0.99
+    },
+    {
+      "fileIndex": 4,
+      "status": "success",
+      "matched": true,
+      "score": 20.0,
+      "actualClassification": "AI_GENERATED",
+      "confidenceScore": 0.99
+    }
+  ]
+}

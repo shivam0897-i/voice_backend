@@ -8,6 +8,8 @@ import os
 import logging
 from typing import Tuple, Optional
 import numpy as np
+import librosa
+import soundfile as sf
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -113,9 +115,6 @@ def load_audio_from_bytes(audio_bytes: bytes, target_sr: int = 22050, audio_form
     
     tmp_path = None
     try:
-        import librosa
-        import soundfile as sf
-        
         # Normalize format
         audio_format = audio_format.lower().strip()
         if audio_format.startswith("."):
@@ -153,31 +152,3 @@ def load_audio_from_bytes(audio_bytes: bytes, target_sr: int = 22050, audio_form
                 pass  # Best effort cleanup
 
 
-def get_audio_duration(audio: np.ndarray, sr: int) -> float:
-    """
-    Calculate the duration of audio in seconds.
-    
-    Args:
-        audio: Audio waveform
-        sr: Sample rate
-        
-    Returns:
-        Duration in seconds
-    """
-    return len(audio) / sr
-
-
-def normalize_audio(audio: np.ndarray) -> np.ndarray:
-    """
-    Normalize audio to have maximum amplitude of 1.0.
-    
-    Args:
-        audio: Audio waveform
-        
-    Returns:
-        Normalized audio
-    """
-    max_val = np.max(np.abs(audio))
-    if max_val > 0:
-        return audio / max_val
-    return audio

@@ -1,0 +1,46 @@
+# Tests and test data
+tests/
+_test_*.py
+test_*.py
+test_*.json
+pytest.ini
+drive-download-*/
+run_final_tests.py
+test_my_api.py
+
+# Documentation (not needed at runtime)
+docs/
+*.md
+!README.md
+
+# Training artifacts
+training/
+*.ipynb
+
+# Python caches
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE and OS files
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Scripts
+scripts/
+
+# Analysis results
+*.json
+!test_request.json
+!test_valid.json
+
+# Git
+.git/
+.gitignore
+
+# Env files
+.env
+.env.*

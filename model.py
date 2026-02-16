@@ -5,6 +5,9 @@ Combines Wav2Vec2 deepfake detection with signal forensics.
 import logging
 import os
 import numpy as np
+import librosa
+import torch
+from scipy.stats import entropy
 from typing import Dict, Tuple, List, Optional
 from dataclasses import dataclass
 import warnings
@@ -57,7 +60,6 @@ def get_device():
     """Get the best available device (GPU or CPU)."""
     global _device
     if _device is None:
-        import torch
         if torch.cuda.is_available():
             _device = "cuda"
         else:
@@ -136,8 +138,6 @@ def load_model():
 
 def extract_signal_features(audio: np.ndarray, sr: int, fast_mode: bool = False) -> Dict[str, float]:
     """Extract signal-based features (pitch, entropy, silence)."""
-    import librosa
-    from scipy.stats import entropy
     
     features = {}
     
@@ -475,9 +475,6 @@ def classify_with_model(audio: np.ndarray, sr: int) -> Tuple[str, float]:
     Returns:
         Tuple of (classification, confidence)
     """
-    import torch
-    import librosa
-    
     model, processor = load_model()
     device = get_device()
     

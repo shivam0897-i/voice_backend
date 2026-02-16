@@ -17,9 +17,11 @@ from datetime import datetime, timezone
 from typing import Optional, Any, Dict, List
 from contextlib import asynccontextmanager
 import numpy as np
-from fastapi import FastAPI, HTTPException, Request, Depends, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, Depends, WebSocket, WebSocketDisconnect, Security
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.security import APIKeyHeader
+from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, Field, field_validator, ValidationError
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
@@ -352,8 +354,6 @@ async def lifespan(app: FastAPI):
         pass
     logger.info("Shutting down...")
 
-
-from fastapi.responses import RedirectResponse
 
 # Initialize FastAPI app with lifespan
 app = FastAPI(
@@ -1737,8 +1737,6 @@ def session_to_summary(session: SessionState) -> SessionSummaryResponse:
 
 
 # Authentication
-from fastapi.security import APIKeyHeader
-from fastapi import Security
 
 api_key_header = APIKeyHeader(name="x-api-key", auto_error=False)  # Changed to False for better error messages
 
@@ -2152,7 +2150,6 @@ async def detect_voice(
 
 
 # Exception handlers
-from fastapi.exceptions import RequestValidationError
 
 def to_json_safe(value: Any) -> Any:
     """Recursively convert values to JSON-safe primitives."""
