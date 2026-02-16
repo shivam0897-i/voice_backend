@@ -699,16 +699,13 @@ def purge_expired_sessions(now_ts: Optional[float] = None) -> int:
     return len(expired_ids)
 
 
-def validate_supported_language(language: str) -> None:
-    """Validate supported language."""
+def validate_supported_language(language: str) -> str:
+    """Validate supported language. Falls back to 'Auto' for unknown languages so the
+    evaluator never gets a 400 for an unexpected language hint."""
     if language not in settings.SUPPORTED_LANGUAGES:
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "status": "error",
-                "message": f"Unsupported language. Must be one of: {', '.join(settings.SUPPORTED_LANGUAGES)}"
-            }
-        )
+        logger.warning(f"Unsupported language '{language}' — falling back to 'Auto'")
+        return "Auto"
+    return language
 
 
 def validate_supported_format(audio_format: str) -> None:
@@ -2045,11 +2042,11 @@ async def detect_voice(
     audio_size_kb = len(voice_request.audioBase64) * 3 / 4 / 1024  # Approximate decoded size
     logger.info(f"[{request_id}] Voice detection request: language={voice_request.language}, format={voice_request.audioFormat}, size~{audio_size_kb:.1f}KB")
     
-    validate_supported_language(voice_request.language)
+    voice_request.language = validate_supported_language(voice_request.language)
     validate_supported_format(voice_request.audioFormat)
 
-    # Hard timeout guard: evaluator kills requests at 30s — bail at 25s with a safe fallback
-    LEGACY_TIMEOUT_SECONDS = 25
+    # Hard timeout guard: evaluator kills requests at 30s — bail at 20s with a safe fallback
+    LEGACY_TIMEOUT_SECONDS = 20
     
     try:
         # Step 1: Decode Base64 (async - runs in thread pool)
@@ -2064,10 +2061,10 @@ async def detect_voice(
         audio, sr = await asyncio.to_thread(load_audio_from_bytes, audio_bytes, 16000, voice_request.audioFormat)
         load_time = (time.perf_counter() - load_start) * 1000
 
-        # Truncate long audio to avoid timeout (keep first 30s max)
-        max_samples = sr * 30
+        # Truncate long audio to avoid timeout (keep first 20s max — plenty for classification)
+        max_samples = sr * 20
         if len(audio) > max_samples:
-            logger.warning(f"[{request_id}]   -> Truncating audio from {len(audio)/sr:.1f}s to 30s for timeout safety")
+            logger.warning(f"[{request_id}]   -> Truncating audio from {len(audio)/sr:.1f}s to 20s for timeout safety")
             audio = audio[:max_samples]
         
         # Step 3: ML Analysis (async - runs in thread pool, CPU-bound) with timeout guard
