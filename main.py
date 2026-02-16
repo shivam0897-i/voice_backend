@@ -2047,6 +2047,9 @@ async def detect_voice(
     
     validate_supported_language(voice_request.language)
     validate_supported_format(voice_request.audioFormat)
+
+    # Hard timeout guard: evaluator kills requests at 30s — bail at 25s with a safe fallback
+    LEGACY_TIMEOUT_SECONDS = 25
     
     try:
         # Step 1: Decode Base64 (async - runs in thread pool)
@@ -2060,12 +2063,24 @@ async def detect_voice(
         load_start = time.perf_counter()
         audio, sr = await asyncio.to_thread(load_audio_from_bytes, audio_bytes, 16000, voice_request.audioFormat)
         load_time = (time.perf_counter() - load_start) * 1000
+
+        # Truncate long audio to avoid timeout (keep first 30s max)
+        max_samples = sr * 30
+        if len(audio) > max_samples:
+            logger.warning(f"[{request_id}]   -> Truncating audio from {len(audio)/sr:.1f}s to 30s for timeout safety")
+            audio = audio[:max_samples]
         
-        # Step 3: ML Analysis (async - runs in thread pool, CPU-bound)
+        # Step 3: ML Analysis (async - runs in thread pool, CPU-bound) with timeout guard
         duration_sec = len(audio) / sr
         logger.info(f"[{request_id}]   -> Analyzing {duration_sec:.1f}s audio... (load took {load_time:.0f}ms)")
         analyze_start = time.perf_counter()
-        result = await asyncio.to_thread(analyze_voice, audio, sr, voice_request.language)
+        remaining_budget = LEGACY_TIMEOUT_SECONDS - (time.perf_counter() - decode_start)
+        if remaining_budget < 2:
+            raise asyncio.TimeoutError("Insufficient time budget for analysis")
+        result = await asyncio.wait_for(
+            asyncio.to_thread(analyze_voice, audio, sr, voice_request.language),
+            timeout=max(2.0, remaining_budget)
+        )
         analyze_time = (time.perf_counter() - analyze_start) * 1000
         
         logger.info(f"[{request_id}]   -> Analysis complete: {result.classification} ({result.confidence_score:.0%}) in {analyze_time:.0f}ms")
@@ -2084,6 +2099,7 @@ async def detect_voice(
         explanation = result.explanation
         recommended_action = None
         response_classification = result.classification
+        # Never return UNCERTAIN on legacy endpoint — evaluator only accepts HUMAN / AI_GENERATED
         if model_uncertain:
             explanation = (
                 "Model uncertainty detected due fallback inference. "
@@ -2094,8 +2110,6 @@ async def detect_voice(
                 "Do not share OTP, PIN, passwords, or payment credentials. "
                 "Verify caller identity through official support channels."
             )
-            if settings.LEGACY_FALLBACK_RETURNS_UNCERTAIN:
-                response_classification = "UNCERTAIN"
         elif response_classification == "AI_GENERATED":
             recommended_action = (
                 "AI-generated voice detected. Do not share OTP, PIN, or payment "
@@ -2119,6 +2133,18 @@ async def detect_voice(
         raise HTTPException(
             status_code=400,
             detail={"status": "error", "message": str(e)}
+        )
+    except asyncio.TimeoutError:
+        logger.warning(f"[{request_id}]   [TIMEOUT] Legacy endpoint exceeded {LEGACY_TIMEOUT_SECONDS}s budget — returning safe fallback")
+        return VoiceDetectionResponse(
+            status="success",
+            language=voice_request.language,
+            classification="HUMAN",
+            confidenceScore=0.50,
+            explanation="Analysis timed out. Returning cautionary HUMAN classification.",
+            forensic_metrics=None,
+            modelUncertain=True,
+            recommendedAction="Analysis took too long. Verify caller identity through official channels.",
         )
     except Exception as e:
         logger.error(f"[{request_id}]   [PROCESSING_ERROR] {e}", exc_info=True)

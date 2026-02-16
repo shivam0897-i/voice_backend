@@ -87,7 +87,7 @@ class Settings(BaseSettings):
         description="Optional local model path that takes priority when present"
     )
     MODEL_LOGIT_TEMPERATURE: float = Field(
-        default=4.0,
+        default=1.5,
         ge=1.0,
         le=10.0,
         description="Temperature scaling for model logits before softmax. Higher values reduce overconfidence. 1.0 = no scaling."
