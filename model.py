@@ -14,14 +14,12 @@ import warnings
 
 from config import settings
 
-# Configure logging
 logger = logging.getLogger(__name__)
 
-# Suppress warnings
 warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
 
-# ── Heuristic thresholds (M7 fix: centralised for easy tuning) ──────
+# Heuristic thresholds (env-configurable for tuning)
 HEURISTIC_THRESHOLDS = {
     # Pitch scoring
     "pitch_optimal_stability": float(os.getenv("PITCH_OPTIMAL_STABILITY", "0.20")),
@@ -46,7 +44,6 @@ _model = None
 _processor = None
 _device = None
 
-
 @dataclass
 class AnalysisResult:
     """Result of voice analysis."""
@@ -64,7 +61,7 @@ def get_device():
             _device = "cuda"
         else:
             _device = "cpu"
-        logger.info(f"Using device: {_device}")
+        logger.info("Using device: %s", _device)
     return _device
 
 
@@ -75,11 +72,9 @@ def _detect_label_inversion(model):
     """Check once at load time whether this model needs label flipping."""
     global _invert_labels
     name = getattr(model.config, '_name_or_path', '').lower()
-    if 'shivam-2211' in name or 'voice-detection-model' in name:
-        _invert_labels = True
-        logger.info("Model has inverted training labels — label flip enabled (logged once)")
-    else:
-        _invert_labels = False
+    _invert_labels = 'shivam-2211' in name or 'voice-detection-model' in name
+    if _invert_labels:
+        logger.info("Label inversion enabled for model: %s", name)
 
 
 def load_model():
@@ -102,10 +97,10 @@ def load_model():
         backup_model = settings.VOICE_MODEL_BACKUP_ID
         
         if os.path.exists(local_path):
-            logger.info(f"Loading local fine-tuned model from: {local_path}")
+            logger.info("Loading local model from: %s", local_path)
             model_name = local_path
         else:
-            logger.info(f"Loading model from HuggingFace Hub: {hf_model}")
+            logger.info("Loading model from HuggingFace Hub: %s", hf_model)
             model_name = hf_model
         
         try:
@@ -113,10 +108,10 @@ def load_model():
             _model = Wav2Vec2ForSequenceClassification.from_pretrained(model_name)
             _model.to(get_device())
             _model.eval()
-            logger.info(f"Model loaded successfully: {model_name}")
+            logger.info("Model loaded: %s", model_name)
             _detect_label_inversion(_model)
         except Exception as e:
-            logger.error(f"Failed to load model {model_name}: {e}")
+            logger.error("Failed to load model %s: %s", model_name, e)
             if model_name != backup_model:
                 logger.warning("Trying backup model...")
                 model_name = backup_model
@@ -125,7 +120,7 @@ def load_model():
                     _model = Wav2Vec2ForSequenceClassification.from_pretrained(model_name)
                     _model.to(get_device())
                     _model.eval()
-                    logger.info(f"Backup model loaded: {model_name}")
+                    logger.info("Backup model loaded: %s", model_name)
                     _detect_label_inversion(_model)
                 except Exception as e2:
                     raise RuntimeError(f"Could not load any model: {e2}")
@@ -212,7 +207,7 @@ def extract_signal_features(audio: np.ndarray, sr: int, fast_mode: bool = False)
         features["harmonic_noise_ratio_db"] = hnr_db
         
     except Exception as e:
-        logger.warning(f"Feature extraction error: {e}")
+        logger.warning("Feature extraction error: %s", e)
         features = {
             "pitch_stability": 0.5,
             "jitter": 0.05,
@@ -478,12 +473,12 @@ def classify_with_model(audio: np.ndarray, sr: int) -> Tuple[str, float]:
     model, processor = load_model()
     device = get_device()
     
-    # Normalize audio to prevent clipping issues
+    # Normalize audio
     max_val = np.max(np.abs(audio))
     if max_val > 0:
         audio = audio / max_val
     
-    # Resample to 16kHz if needed (Wav2Vec2 expects 16kHz)
+    # Resample to 16kHz if needed
     target_sr = 16000
     if sr != target_sr:
         audio = librosa.resample(audio, orig_sr=sr, target_sr=target_sr)
@@ -495,33 +490,25 @@ def classify_with_model(audio: np.ndarray, sr: int) -> Tuple[str, float]:
         return_tensors="pt",
         padding=True
     )
-    
-    # Move to device
+
     inputs = {k: v.to(device) for k, v in inputs.items()}
-    
-    # Run inference
+
     with torch.no_grad():
         outputs = model(**inputs)
         logits = outputs.logits
 
-        # Temperature scaling: divide logits by T > 1 to soften the
-        # probability distribution.  The model routinely saturates at
-        # 1.00 confidence for browser-mic audio, leaving zero room for
-        # the heuristic cross-check to correct a wrong classification.
+        # Temperature scaling: soften probability distribution so the
+        # heuristic cross-check can still correct misclassifications.
         temperature = float(settings.MODEL_LOGIT_TEMPERATURE)
         if temperature > 1.0:
             logits = logits / temperature
 
         probabilities = torch.softmax(logits, dim=-1)
-        
         # Get prediction
         predicted_class = torch.argmax(probabilities, dim=-1).item()
         confidence = probabilities[0][predicted_class].item()
     
-    # Map class to label using the model's id2label config.
-    # IMPORTANT: HuggingFace stores id2label with STRING keys ("0", "1")
-    # but predicted_class from torch.argmax().item() is an int.
-    # We must normalise the keys to int so .get() actually matches.
+    # Normalise id2label keys from str to int (HF convention mismatch).
     raw_id2label = getattr(model.config, 'id2label', None) or {}
     id2label = {int(k): v for k, v in raw_id2label.items()}
     label = id2label.get(predicted_class, 'UNKNOWN')
@@ -532,21 +519,10 @@ def classify_with_model(audio: np.ndarray, sr: int) -> Tuple[str, float]:
         [f"{p:.4f}" for p in probabilities[0].cpu().tolist()],
     )
 
-    # ── Label interpretation ──
-    # The primary model (shivam-2211/voice-detection-model) was trained with
-    # inverted label semantics: its class-0 output actually corresponds to
-    # REAL/human audio and class-1 to FAKE/AI-generated, despite the config
-    # claiming 0=FAKE and 1=REAL.  Detected once at load time via
-    # _detect_label_inversion().
+    # Label interpretation — see _detect_label_inversion() for rationale.
     if _invert_labels:
-        # Flip: treat model class-0 as REAL, class-1 as FAKE
-        if predicted_class == 0:
-            classification = "HUMAN"
-        else:
-            classification = "AI_GENERATED"
-        # confidence stays the same (model's own softmax output)
+        classification = "HUMAN" if predicted_class == 0 else "AI_GENERATED"
     else:
-        # Standard mapping: use labels from config
         if label.upper() in ['FAKE', 'SPOOF', 'SYNTHETIC', 'AI']:
             classification = "AI_GENERATED"
         else:
@@ -586,7 +562,7 @@ def analyze_voice(audio: np.ndarray, sr: int, language: str = "English", realtim
         try:
             classification, ml_confidence = classify_with_model(audio, sr)
         except Exception as e:
-            logger.error(f"ML model error: {e}, falling back to signal analysis")
+            logger.error("ML model error: %s, falling back to signal analysis", e)
             ml_fallback = True
             classification = "HUMAN"
             ml_confidence = 0.5
@@ -611,39 +587,21 @@ def analyze_voice(audio: np.ndarray, sr: int, language: str = "English", realtim
         ml_confidence = ai_probability if classification == "AI_GENERATED" else (1.0 - ai_probability)
         ml_confidence = float(max(0.5, min(0.99, ml_confidence)))
 
-    # ── Authenticity cross-check (REALTIME ONLY) ─────────────────────
-    # When the model says AI_GENERATED but the signal forensics indicate
-    # human-like audio (high authenticity), moderate the confidence.
-    # This prevents a poorly-calibrated model from steamrolling the
-    # heuristic evidence.  The model was fine-tuned on curated datasets
-    # and can misclassify real browser-mic audio as synthetic.
-    #
-    # IMPORTANT: This override is ONLY for realtime browser-mic sessions.
-    # File uploads use clean audio paths and the model's classification
-    # should be trusted.  Applying the override to file uploads would
-    # cause real AI-generated audio to be misclassified as HUMAN.
-    #
-    # Browser-mic audio typically has authenticity 34-60 and anomaly 40-78
-    # (naturally higher noise floor and spectral irregularity). The
-    # thresholds must reflect these real-world ranges.
+    # Authenticity cross-check (realtime mic only): when the model says
+    # AI_GENERATED but signal forensics show human-like audio, moderate
+    # the confidence or flip the classification.  Not applied to file
+    # uploads where the model should be trusted.
     if realtime and source == "mic" and classification == "AI_GENERATED" and authenticity_score > 35:
-        # The higher the authenticity, the more we moderate.
-        # authenticity 35 → no change.  authenticity 60 → cap at ~0.75
-        # authenticity 80 → cap at ~0.55
         moderation_factor = max(0.50, 1.0 - (authenticity_score - 35) / 100.0)
         if ml_confidence > moderation_factor:
             logger.info(
-                "Authenticity cross-check: moderated AI confidence %.2f → %.2f "
+                "Authenticity cross-check: moderated AI confidence %.2f -> %.2f "
                 "(authenticity=%.1f, anomaly=%.1f)",
                 ml_confidence, moderation_factor,
                 authenticity_score, acoustic_anomaly_score,
             )
             ml_confidence = moderation_factor
-        # If authenticity indicates human-like features (>40) and anomaly
-        # is not extreme (<65), override the classification — the signal
-        # evidence strongly contradicts the model. Browser mic audio
-        # naturally has anomaly 22-64 and authenticity 34-68, so the
-        # thresholds must cover these real-world ranges.
+        # Override when signal evidence strongly contradicts the model.
         if authenticity_score > 40 and acoustic_anomaly_score < 65:
             logger.info(
                 "Authenticity override: flipping AI_GENERATED → HUMAN "
@@ -682,4 +640,4 @@ def preload_model():
     try:
         load_model()
     except Exception as e:
-        logger.error(f"Model preload failed: {e}")
+        logger.error("Model preload failed: %s", e)

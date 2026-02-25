@@ -178,7 +178,7 @@ class Settings(BaseSettings):
         description="Mask sensitive entities from transcript before returning response"
     )
 
-    # WebSocket limits (M8 fix)
+    # WebSocket limits
     WS_MAX_DURATION_SECONDS: int = Field(
         default=1800,
         description="Maximum WebSocket connection duration in seconds (30 min)"

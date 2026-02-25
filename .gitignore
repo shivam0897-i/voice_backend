@@ -39,18 +39,10 @@ Thumbs.db
 fine_tuned_model/
 training/
 
-# === Non-production files (keep out of HF Space) ===
-
-# Tests
-tests/
-pytest.ini
-
-# Docs and reports
-docs/
-
-# Dev/validation scripts
-scripts/
-scenario_validation_cases.py
+# Test artifacts (generated output)
+evaluation_results.json
+test_my_api.py
+run_final_tests.py
 
 # Test request fixtures
 test_request.json
@@ -59,3 +51,17 @@ test_valid.json
 # Helper/patch scripts
 _fix_*.py
 _test_*.py
+
+# Download folders
+drive-download-*/
+
+# Local docs / tests / scripts (not deployed)
+docs/
+tests/
+scripts/
+pytest.ini
+scenario_validation_cases.py
+realtime-analysis-*.json
+
+# Python project metadata (not needed for deployment)
+pyproject.toml

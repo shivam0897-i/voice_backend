@@ -27,14 +27,12 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
-# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-# Rate limiting
 limiter = Limiter(key_func=get_remote_address, default_limits=["1000/minute"])
 
 from audio_utils import decode_base64_audio, load_audio_from_bytes
@@ -50,7 +48,6 @@ try:
 except Exception:  # pragma: no cover - optional dependency
     redis = None
 
-# Computed constraints
 MAX_AUDIO_BASE64_LENGTH = settings.MAX_AUDIO_SIZE_MB * 1024 * 1024 * 4 // 3
 
 
@@ -88,12 +85,11 @@ class SessionState:
 
 SESSION_STORE: Dict[str, SessionState] = {}
 SESSION_LOCK = asyncio.Lock()
-SESSION_LOCKS: Dict[str, asyncio.Lock] = {}  # Per-session locks (M1)
+SESSION_LOCKS: Dict[str, asyncio.Lock] = {}
 SESSION_STORE_BACKEND_ACTIVE = "memory"
 REDIS_CLIENT: Any = None
 ASR_INFLIGHT_TASKS: set[asyncio.Task] = set()
 ASR_INFLIGHT_LOCK = asyncio.Lock()
-
 
 
 def use_redis_session_store() -> bool:
@@ -296,24 +292,23 @@ def run_startup_warmups() -> None:
 
 # Detect environment
 if settings.SPACE_ID:
-    logger.info(f"Running on HuggingFace Spaces: {settings.SPACE_ID}")
+    logger.info("Running on HuggingFace Spaces: %s", settings.SPACE_ID)
 
 
 def get_session_lock(session_id: str) -> asyncio.Lock:
-    """Return a per-session lock, creating one if needed (M1 fix)."""
+    """Return a per-session lock, creating one if needed."""
     if session_id not in SESSION_LOCKS:
         SESSION_LOCKS[session_id] = asyncio.Lock()
     return SESSION_LOCKS[session_id]
 
 
 async def _periodic_session_purge(interval: int = 60) -> None:
-    """Background task: purge expired sessions every *interval* seconds (M2 fix)."""
+    """Background task: purge expired sessions every *interval* seconds."""
     while True:
         try:
             await asyncio.sleep(interval)
             async with SESSION_LOCK:
                 removed = purge_expired_sessions()
-                # Also clean up per-session locks for removed sessions
                 stale_lock_keys = [k for k in SESSION_LOCKS if k not in SESSION_STORE]
                 for k in stale_lock_keys:
                     del SESSION_LOCKS[k]
@@ -335,14 +330,13 @@ async def lifespan(app: FastAPI):
         preload_model()
         logger.info("ML model loaded successfully")
     except Exception as e:
-        logger.error(f"Failed to preload model: {e}")
+        logger.error("Failed to preload model: %s", e)
 
     try:
         await asyncio.to_thread(run_startup_warmups)
     except Exception as exc:
         logger.warning("Startup warm-ups encountered an issue: %s", exc)
 
-    # Background periodic purge task (M2 fix: avoid purging on every request)
     purge_task = asyncio.create_task(_periodic_session_purge())
 
     yield
@@ -355,7 +349,6 @@ async def lifespan(app: FastAPI):
     logger.info("Shutting down...")
 
 
-# Initialize FastAPI app with lifespan
 app = FastAPI(
     title="AI Voice Detection API",
     description="Detects whether a voice sample is AI-generated or spoken by a real human",
@@ -369,14 +362,9 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Add rate limiter to app state
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-# Middleware configuration
-# CORS
-# Note: Set ALLOWED_ORIGINS env var in production
-# L2 fix: disable credentials for wildcard origins (browser ignores Set-Cookie anyway)
 _cors_origins = settings.ALLOWED_ORIGINS
 _cors_credentials = "*" not in _cors_origins
 if not _cors_credentials:
@@ -389,38 +377,29 @@ app.add_middleware(
     allow_headers=["Content-Type", "x-api-key", "Authorization"],
 )
 
-# Request Logging & Timing Middleware
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
-    # Generate request ID and start timer
     request_id = str(uuid.uuid4())[:8]
     request.state.request_id = request_id
     start_time = time.perf_counter()
     
-    # Log request start
     method = request.method
     path = request.url.path
     if method == "POST":
-        logger.info(f"[{request_id}] [START] {method} {path}")
-    
-    # Process request (async)
+        logger.info("[%s] [START] %s %s", request_id, method, path)
+
     response = await call_next(request)
-    
-    # Calculate duration
+
     duration_ms = (time.perf_counter() - start_time) * 1000
     status_code = response.status_code
-    
-    # Log request completion with timing
+
     if method == "POST":
         status_label = "[OK]" if status_code == 200 else "[ERR]" if status_code >= 400 else "[WARN]"
-        logger.info(f"[{request_id}] {status_label} END {method} {path} -> {status_code} ({duration_ms:.0f}ms)")
-    
-    # Add headers
+        logger.info("[%s] %s END %s %s -> %s (%0.fms)", request_id, status_label, method, path, status_code, duration_ms)
+
     response.headers["X-Request-ID"] = request_id
     response.headers["X-Response-Time"] = f"{duration_ms:.0f}ms"
     response.headers["X-Content-Type-Options"] = "nosniff"
-    # Allow embedding in Hugging Face iframe
-    # response.headers["X-Frame-Options"] = "DENY"
     response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     # Relax CSP to allow standard API documentation via CDNs (ReDoc/Swagger)
     response.headers["Content-Security-Policy"] = (
@@ -433,7 +412,6 @@ async def log_requests(request: Request, call_next):
     return response
 
 
-# Request/Response Models
 class VoiceDetectionRequest(BaseModel):
     """Request body for voice detection."""
     language: str = Field(default="Auto", description="Language hint (Auto, English, Hindi, Hinglish, Tamil, Malayalam, Telugu). Defaults to auto-detect.")
@@ -703,7 +681,7 @@ def validate_supported_language(language: str) -> str:
     """Validate supported language. Falls back to 'Auto' for unknown languages so the
     evaluator never gets a 400 for an unexpected language hint."""
     if language not in settings.SUPPORTED_LANGUAGES:
-        logger.warning(f"Unsupported language '{language}' — falling back to 'Auto'")
+        logger.warning("Unsupported language '%s' — falling back to 'Auto'", language)
         return "Auto"
     return language
 
@@ -751,6 +729,7 @@ def dedupe_preserve_order(items: List[str]) -> List[str]:
 def update_session_behaviour_state(session: SessionState, language_analysis: Dict[str, Any]) -> Dict[str, Any]:
     """Update session-level behaviour score from transcript and semantic trends."""
     transcript_source = str(language_analysis.get("transcript_raw", language_analysis.get("transcript", "")))
+
     transcript = normalize_transcript_for_behavior(transcript_source)
     semantic_flags = list(language_analysis.get("semantic_flags", []))
     keyword_categories = list(language_analysis.get("keyword_categories", []))
@@ -1087,24 +1066,14 @@ def build_risk_update(
         confidence_audio = int(round(confidence * 100))
         anomaly_audio = int(max(0.0, min(100.0, acoustic_anomaly * 0.85)))
         audio_score = max(confidence_audio, anomaly_audio)
-        # When authenticity (signal forensics) contradicts AI classification,
-        # dampen the audio_score.  Browser-mic audio typically has
-        # authenticity 34-60, so the threshold starts low.
-        # IMPORTANT: Only dampen for mic source — file uploads should trust
-        # the model classification.
+        # Dampen audio_score when signal forensics contradict AI classification
+        # for mic-source audio (browser mic has authenticity 34-60 naturally).
         if authenticity > 35 and _audio_source == "mic":
-            # Scale factor: authenticity 35 → 1.0 (no change),
-            #               authenticity 55 → 0.80,
-            #               authenticity 80 → 0.55
             auth_dampen = max(0.50, 1.0 - (authenticity - 35) / 100.0)
             audio_score = int(round(audio_score * auth_dampen))
     else:
         authenticity_audio_score = int(max(0, min(100, (50.0 - authenticity) * 1.2)))
-        # Browser mic naturally has higher spectral anomaly (40-78) due to
-        # noise floor and frequency response. Use 0.55 multiplier for mic
-        # (was 0.70) so anomaly 60 → score 33 instead of 42, keeping
-        # HUMAN chunks in LOW risk range where they belong.
-        # File uploads use standard 0.90 multiplier.
+        # Mic audio has higher spectral anomaly (40-78); use lower multiplier.
         _anomaly_mult = 0.55 if _audio_source == "mic" else 0.90
         anomaly_audio_score = int(max(0.0, min(100.0, acoustic_anomaly * _anomaly_mult)))
         audio_score = max(authenticity_audio_score, anomaly_audio_score)
@@ -1163,21 +1132,14 @@ def build_risk_update(
         delta_boost = int(delta * settings.RISK_DELTA_BOOST_FACTOR)
         risk_score = min(100, risk_score + delta_boost)
 
-    # ── P2a: Risk dampening — prevent single-chunk LOW→CRITICAL ────
-    # If previous score was below 60 (LOW/MEDIUM) and new score jumps
-    # to CRITICAL (>=80), cap at 79 unless 2+ recent HIGH scores in
-    # the session history support the escalation.
+    # Risk dampening: prevent single-chunk LOW→CRITICAL jumps.
     if previous_score is not None and previous_score < 60 and risk_score >= 80:
         recent_high = sum(1 for s in _risk_history[-5:] if s >= 60)
         if recent_high < 2:
             risk_score = min(risk_score, 79)
             behaviour_signals.append("risk_dampened_no_prior_high")
 
-    # ── L3 fix: First-chunk guard ──────────────────────────────────────
-    # The very first chunk often contains connection noise / silence.
-    # Cap its risk at 60 (MEDIUM) so one noisy handshake doesn't set
-    # the session trajectory high — UNLESS there's a strong positive
-    # signal (AI voice, high acoustic anomaly, or fraud keywords).
+    # First-chunk guard: cap noise-only first chunks at MEDIUM.
     if _chunks_processed == 0 and risk_score > 60:
         has_strong_signal = (
             (classification == "AI_GENERATED" and confidence >= 0.80)
@@ -1189,10 +1151,7 @@ def build_risk_update(
             risk_score = 60
             behaviour_signals.append("first_chunk_capped")
 
-    # ── M4 fix: Cumulative risk escalation for sustained moderate signals ──
-    # If 3+ of the last 5 chunks scored ≥40 AND the current chunk also
-    # scores ≥40, apply a cumulative boost (3 pts per recent moderate chunk,
-    # max +15). This ensures sustained low-grade fraud eventually triggers alerts.
+    # Cumulative escalation for sustained moderate signals.
     if len(_risk_history) >= 3 and risk_score >= 40:
         recent_moderate = sum(1 for s in _risk_history[-5:] if s >= 40)
         if recent_moderate >= 3:
@@ -1200,23 +1159,15 @@ def build_risk_update(
             risk_score = min(100, risk_score + cumulative_boost)
             behaviour_signals.append("sustained_moderate_risk")
 
-    # ── P2b: Sustained AI voice escalation ───────────────────────────
-    # Instead of a flat floor at 70, escalate based on how many chunks
-    # have been classified as AI.  floor = 70 + min(20, ai_chunks * 5)
-    # This means: 1 AI chunk → 75, 2 → 80, 3 → 85, 4+ → 90.
-    # Raised confidence threshold to 0.92 (was 0.85) because with
-    # temperature scaling T=4.0, the softened model outputs 0.67-0.84
-    # for browser mic audio. Only truly confident AI predictions should
-    # trigger this floor escalation.
+    # Sustained AI voice floor escalation.
+    # floor = 70 + min(20, ai_chunks * 5)
     if classification == "AI_GENERATED" and confidence >= 0.92:
         ai_floor = 70 + min(20, _voice_ai_chunks * 5)
         risk_score = max(risk_score, ai_floor)
         if _voice_ai_chunks >= 2:
             behaviour_signals.append("sustained_ai_voice")
 
-    # ── P1: AI-voice-aware CPI ───────────────────────────────────────
-    # Add an AI-voice ratio component so CPI doesn't stay at 0 when
-    # the only signal is the model detecting synthetic voice.
+    # AI-voice-aware CPI includes synthetic voice ratio.
     _ai_ratio = (_voice_ai_chunks / max(1, _chunks_processed)) if _chunks_processed > 0 else 0.0
     if previous_score is None:
         cpi = min(100.0, max(0.0,
@@ -1264,11 +1215,7 @@ def build_risk_update(
         or any(signal in behaviour_signals for signal in strong_intent)
     )
 
-    # ── P5: First-chunk alert guard ──────────────────────────────────
-    # On the very first chunk (_chunks_processed == 0), suppress the
-    # alert unless CRITICAL (risk >= 80) or strong semantic intent.
-    # This prevents a single false-positive chunk from triggering an
-    # alert that will persist in the session history.
+    # First-chunk alert guard: suppress unless CRITICAL or strong intent.
     if alert_triggered and _chunks_processed == 0:
         has_strong_intent = any(s in behaviour_signals for s in strong_intent)
         if risk_level != "CRITICAL" and not has_strong_intent:
@@ -1424,14 +1371,9 @@ async def process_audio_chunk(
         f"({analysis_result.confidence_score:.0%}) in {analyze_ms:.0f}ms"
     )
 
-    # ── Short-chunk guard (bidirectional) ────────────────────────────
-    # Audio segments shorter than 2 s give the classifier insufficient
-    # spectral context, leading to unreliable predictions in both
-    # directions (e.g. a 1.6 s human tail flipping to AI 100%, or a
-    # short synthetic tail flipping to HUMAN 99%).  When the session
-    # already has a clear majority classification, we carry that
-    # forward instead of trusting a sub-2-second segment.
-    MIN_RELIABLE_DURATION = 2.0  # seconds
+    # Short-chunk guard: sub-2s segments are unreliable; carry forward
+    # the session's majority classification instead.
+    MIN_RELIABLE_DURATION = 2.0
     if duration_sec < MIN_RELIABLE_DURATION:
         async with SESSION_LOCK:
             _sess = get_session_state(session_id)
@@ -1625,11 +1567,7 @@ async def process_audio_chunk(
             session.final_voice_classification = voice_classification
             session.final_voice_confidence = voice_confidence
 
-        # ── P4: Reconcile final_call_label with majority vote ────────
-        # If the majority vote says HUMAN but the watermark-based label
-        # is FRAUD, downgrade.  Use average risk (not max) to decide
-        # between SPAM and SAFE — a single spike shouldn't override an
-        # otherwise clean session.
+        # Reconcile final_call_label with majority vote.
         if session.final_voice_classification == "HUMAN" and session.final_call_label == "FRAUD":
             avg_risk = sum(session.risk_history) / max(1, len(session.risk_history))
             session.final_call_label = "SPAM" if avg_risk >= 30 else "SAFE"
@@ -1638,19 +1576,14 @@ async def process_audio_chunk(
         elif session.final_voice_classification == "AI_GENERATED" and session.final_call_label == "SAFE":
             session.final_call_label = "SPAM"
 
-        # ── P5: Average risk sanity check ────────────────────────────
-        # When the average risk across all chunks is LOW (< 35) but the
-        # label is FRAUD (because one or two spikes hit max_risk_score),
-        # downgrade to SPAM.  A session where 80%+ of chunks are SAFE
-        # should not be labelled FRAUD — the spikes were likely
-        # misclassifications from browser mic audio artifacts.
+        # Average risk sanity check: downgrade FRAUD when most chunks are LOW.
         if session.final_call_label == "FRAUD" and session.chunks_processed >= 5:
             avg_risk = sum(session.risk_history) / max(1, len(session.risk_history))
             if avg_risk < 35:
                 session.final_call_label = "SPAM"
                 logger.info(
-                    f"P5 sanity: downgraded FRAUD → SPAM (avg_risk={avg_risk:.1f}, "
-                    f"chunks={session.chunks_processed})"
+                    "Sanity: downgraded FRAUD -> SPAM (avg_risk=%.1f, chunks=%d)",
+                    avg_risk, session.chunks_processed,
                 )
 
         if scored["alert"].triggered:
@@ -1852,7 +1785,7 @@ async def analyze_realtime_chunk(
 @app.websocket("/api/voice-detection/v1/session/{session_id}/stream")
 async def stream_realtime_session(websocket: WebSocket, session_id: str):
     """WebSocket endpoint for continuous chunk-based analysis."""
-    # L4 fix: accept auth via query param (legacy) OR first-message auth
+    # Accept auth via query-param or first-message token
     has_query_key = verify_websocket_api_key(websocket)
     if not has_query_key:
         # No query-param key — accept connection and require first-message auth
@@ -1872,7 +1805,7 @@ async def stream_realtime_session(websocket: WebSocket, session_id: str):
     request_id = f"ws-{session_id[:8]}"
     ws_start = time.time()
 
-    # L4 fix: if no query-param key, require first-message auth
+    # Fall back to first-message authentication
     if not has_query_key:
         try:
             auth_msg = await asyncio.wait_for(websocket.receive_json(), timeout=10.0)
@@ -1890,7 +1823,7 @@ async def stream_realtime_session(websocket: WebSocket, session_id: str):
 
     try:
         while True:
-            # M8 fix: enforce max connection duration
+            # Enforce max connection duration
             elapsed = time.time() - ws_start
             if elapsed >= settings.WS_MAX_DURATION_SECONDS:
                 await websocket.send_json({
@@ -1900,7 +1833,7 @@ async def stream_realtime_session(websocket: WebSocket, session_id: str):
                 await websocket.close(code=1000, reason="Max duration exceeded")
                 break
 
-            # M8 fix: enforce idle timeout
+            # Enforce idle timeout
             try:
                 payload = await asyncio.wait_for(
                     websocket.receive_json(),
@@ -1932,7 +1865,7 @@ async def stream_realtime_session(websocket: WebSocket, session_id: str):
             except ValueError as e:
                 await websocket.send_json({"status": "error", "message": str(e)})
     except WebSocketDisconnect:
-        logger.info(f"[{request_id}] WebSocket disconnected")
+        logger.info("[%s] WebSocket disconnected", request_id)
 
 
 @app.get("/v1/session/{session_id}/summary", response_model=SessionSummaryResponse, include_in_schema=False)
@@ -2035,40 +1968,28 @@ async def detect_voice(
     """
     Returns classification result with confidence score and explanation.
     """
-    # Log request info for debugging
     request_id = getattr(request.state, 'request_id', 'unknown')
-    audio_size_kb = len(voice_request.audioBase64) * 3 / 4 / 1024  # Approximate decoded size
-    logger.info(f"[{request_id}] Voice detection request: language={voice_request.language}, format={voice_request.audioFormat}, size~{audio_size_kb:.1f}KB")
-    
+    audio_size_kb = len(voice_request.audioBase64) * 3 / 4 / 1024
+    logger.info("[%s] Voice detection: lang=%s, fmt=%s, size~%.1fKB",
+                request_id, voice_request.language, voice_request.audioFormat, audio_size_kb)
+
     voice_request.language = validate_supported_language(voice_request.language)
     validate_supported_format(voice_request.audioFormat)
 
-    # Hard timeout guard: evaluator kills requests at 30s — bail at 20s with a safe fallback
     LEGACY_TIMEOUT_SECONDS = 20
-    
+
     try:
-        # Step 1: Decode Base64 (async - runs in thread pool)
-        logger.info(f"[{request_id}]   -> Decoding Base64...")
         decode_start = time.perf_counter()
         audio_bytes = await asyncio.to_thread(decode_base64_audio, voice_request.audioBase64)
-        decode_time = (time.perf_counter() - decode_start) * 1000
-        
-        # Step 2: Load audio (async - runs in thread pool)
-        logger.info(f"[{request_id}]   -> Loading audio... (decode took {decode_time:.0f}ms)")
-        load_start = time.perf_counter()
-        audio, sr = await asyncio.to_thread(load_audio_from_bytes, audio_bytes, 16000, voice_request.audioFormat)
-        load_time = (time.perf_counter() - load_start) * 1000
 
-        # Truncate long audio to avoid timeout (keep first 20s max — plenty for classification)
+        audio, sr = await asyncio.to_thread(load_audio_from_bytes, audio_bytes, 16000, voice_request.audioFormat)
+
         max_samples = sr * 20
         if len(audio) > max_samples:
-            logger.warning(f"[{request_id}]   -> Truncating audio from {len(audio)/sr:.1f}s to 20s for timeout safety")
+            logger.warning("[%s] Truncating audio from %.1fs to 20s", request_id, len(audio) / sr)
             audio = audio[:max_samples]
-        
-        # Step 3: ML Analysis (async - runs in thread pool, CPU-bound) with timeout guard
+
         duration_sec = len(audio) / sr
-        logger.info(f"[{request_id}]   -> Analyzing {duration_sec:.1f}s audio... (load took {load_time:.0f}ms)")
-        analyze_start = time.perf_counter()
         remaining_budget = LEGACY_TIMEOUT_SECONDS - (time.perf_counter() - decode_start)
         if remaining_budget < 2:
             raise asyncio.TimeoutError("Insufficient time budget for analysis")
@@ -2076,11 +1997,11 @@ async def detect_voice(
             asyncio.to_thread(analyze_voice, audio, sr, voice_request.language),
             timeout=max(2.0, remaining_budget)
         )
-        analyze_time = (time.perf_counter() - analyze_start) * 1000
-        
-        logger.info(f"[{request_id}]   -> Analysis complete: {result.classification} ({result.confidence_score:.0%}) in {analyze_time:.0f}ms")
-        
-        # Extract metrics if available
+        analyze_time = (time.perf_counter() - decode_start) * 1000
+
+        logger.info("[%s] Analysis complete: %s (%.0f%%) in %.0fms",
+                    request_id, result.classification, result.confidence_score * 100, analyze_time)
+
         metrics = None
         if result.features:
             metrics = ForensicMetrics(
@@ -2094,7 +2015,6 @@ async def detect_voice(
         explanation = result.explanation
         recommended_action = None
         response_classification = result.classification
-        # Never return UNCERTAIN on legacy endpoint — evaluator only accepts HUMAN / AI_GENERATED
         if model_uncertain:
             explanation = (
                 "Model uncertainty detected due fallback inference. "
@@ -2111,7 +2031,6 @@ async def detect_voice(
                 "credentials. Verify caller identity through official channels."
             )
 
-        # Return response
         return VoiceDetectionResponse(
             status="success",
             language=voice_request.language,
@@ -2124,13 +2043,13 @@ async def detect_voice(
         )
         
     except ValueError as e:
-        logger.warning(f"[{request_id}]   [VALIDATION_ERROR] {e}")
+        logger.warning("[%s] Validation error: %s", request_id, e)
         raise HTTPException(
             status_code=400,
             detail={"status": "error", "message": str(e)}
         )
     except asyncio.TimeoutError:
-        logger.warning(f"[{request_id}]   [TIMEOUT] Legacy endpoint exceeded {LEGACY_TIMEOUT_SECONDS}s budget — returning safe fallback")
+        logger.warning("[%s] Legacy endpoint exceeded %ds budget", request_id, LEGACY_TIMEOUT_SECONDS)
         return VoiceDetectionResponse(
             status="success",
             language=voice_request.language,
@@ -2142,10 +2061,10 @@ async def detect_voice(
             recommendedAction="Analysis took too long. Verify caller identity through official channels.",
         )
     except Exception as e:
-        logger.error(f"[{request_id}]   [PROCESSING_ERROR] {e}", exc_info=True)
+        logger.error("[%s] Processing error: %s", request_id, e, exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail={"status": "error", "message": f"Internal Server Error (request_id={request_id})"}
+            detail={"status": "error", "message": "Internal Server Error"}
         )
 
 
@@ -2215,7 +2134,7 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     """Global handler to catch unhandled exceptions and prevent stack traces."""
-    logger.error(f"Unhandled error: {exc}", exc_info=True)
+    logger.error("Unhandled error: %s", exc, exc_info=True)
     return JSONResponse(
         status_code=500,
         content={"status": "error", "message": "Internal Server Error"}
@@ -2225,23 +2144,3 @@ async def global_exception_handler(request: Request, exc: Exception):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=settings.PORT)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

@@ -11,7 +11,6 @@ import numpy as np
 import librosa
 import soundfile as sf
 
-# Configure logging
 logger = logging.getLogger(__name__)
 
 # Magic bytes for common audio formats
@@ -106,38 +105,33 @@ def load_audio_from_bytes(audio_bytes: bytes, target_sr: int = 22050, audio_form
     Raises:
         ValueError: If audio cannot be loaded or is invalid
     """
-    # Validate audio content BEFORE attempting to decode
     is_valid, validation_result = validate_audio_content(audio_bytes)
     if not is_valid:
         raise ValueError(f"Invalid audio file: {validation_result}")
     
-    logger.info(f"Audio validation passed. Detected format hint: {validation_result}")
+    logger.info("Audio validation passed. Detected format hint: %s", validation_result)
     
     tmp_path = None
     try:
-        # Normalize format
         audio_format = audio_format.lower().strip()
         if audio_format.startswith("."):
             audio_format = audio_format[1:]
         
-        # Validate format (security)
+        # Reject suspicious format strings
         if not audio_format.isalnum() or len(audio_format) > 5:
             raise ValueError(f"Invalid audio format: {audio_format}")
         
-        # Write to temp file for librosa
         with tempfile.NamedTemporaryFile(suffix=f".{audio_format}", delete=False) as tmp_file:
             tmp_file.write(audio_bytes)
             tmp_path = tmp_file.name
         
-        # Load audio with librosa
         audio, sr = librosa.load(tmp_path, sr=target_sr, mono=True)
         
-        # Validate loaded audio
         if len(audio) == 0:
             raise ValueError("Audio file is empty or could not be decoded")
         
         duration = len(audio) / sr
-        logger.info(f"Audio loaded successfully: {duration:.2f}s at {sr}Hz")
+        logger.info("Audio loaded: %.2fs at %dHz", duration, sr)
         
         return audio, sr
                 
