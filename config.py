@@ -17,6 +17,13 @@ class Settings(BaseSettings):
         description="Project or Portfolio URL"
     )
 
+    # Security: Swagger/OpenAPI docs are disabled by default in production.
+    # Set DOCS_ENABLED=true in .env for local development.
+    DOCS_ENABLED: bool = Field(
+        default=False,
+        description="Enable /docs, /redoc, and /openapi.json endpoints (disable in production)"
+    )
+
     # CORS Settings
     # Use str field with alias to read env var safely (avoids Pydantic trying to parse as JSON)
     ALLOWED_ORIGINS_RAW: str = Field(default="*", alias="ALLOWED_ORIGINS")
