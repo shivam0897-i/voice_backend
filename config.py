@@ -67,6 +67,12 @@ class Settings(BaseSettings):
         le=8,
         description="Maximum concurrent ASR background tasks allowed to prevent thread pileups"
     )
+    VOICE_MAX_INFLIGHT_TASKS: int = Field(
+        default=2,
+        ge=1,
+        le=8,
+        description="Maximum concurrent Voice Analysis PyTorch tasks allowed to prevent OOM thread pileups"
+    )
     ASR_WARMUP_ENABLED: bool = Field(
         default=True,
         description="Warm faster-whisper model during startup to avoid first-chunk latency spike"

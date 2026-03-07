@@ -90,6 +90,8 @@ SESSION_STORE_BACKEND_ACTIVE = "memory"
 REDIS_CLIENT: Any = None
 ASR_INFLIGHT_TASKS: set[asyncio.Task] = set()
 ASR_INFLIGHT_LOCK = asyncio.Lock()
+VOICE_INFLIGHT_TASKS: set[asyncio.Task] = set()
+VOICE_INFLIGHT_LOCK = asyncio.Lock()
 
 
 def use_redis_session_store() -> bool:
@@ -236,6 +238,65 @@ async def transcribe_audio_guarded(
     except Exception as exc:
         logger.warning("[%s] Realtime ASR path failed: %s; continuing without transcript", request_id, exc)
         return _asr_fallback_result("error")
+
+
+def _voice_fallback_result() -> AnalysisResult:
+    return AnalysisResult(
+        label="UNCERTAIN",
+        confidence=0.5,
+        ai_confidence=0.0,
+        human_confidence=0.0,
+        error="Server busy or timeout.",
+        processing_time_ms=0.0
+    )
+
+
+def _discard_voice_task(task: asyncio.Task) -> None:
+    VOICE_INFLIGHT_TASKS.discard(task)
+
+
+async def analyze_voice_guarded(
+    audio: np.ndarray,
+    sr: int,
+    timeout_seconds: float,
+    request_id: str,
+    language: str = "English",
+    realtime: bool = False,
+    source: str = "file"
+) -> AnalysisResult:
+    """Run voice analysis with bounded in-flight tasks to prevent OOM thread pileups."""
+    max_inflight = max(1, int(getattr(settings, "VOICE_MAX_INFLIGHT_TASKS", 2)))
+
+    async with VOICE_INFLIGHT_LOCK:
+        stale_tasks = [task for task in VOICE_INFLIGHT_TASKS if task.done()]
+        for stale in stale_tasks:
+            VOICE_INFLIGHT_TASKS.discard(stale)
+
+        if len(VOICE_INFLIGHT_TASKS) >= max_inflight:
+            logger.warning(
+                "[%s] Voice analysis skipped (inflight=%s, max=%s); preventing OOM",
+                request_id,
+                len(VOICE_INFLIGHT_TASKS),
+                max_inflight,
+            )
+            return _voice_fallback_result()
+
+        voice_task = asyncio.create_task(asyncio.to_thread(analyze_voice, audio, sr, language, realtime, source))
+        VOICE_INFLIGHT_TASKS.add(voice_task)
+        voice_task.add_done_callback(_discard_voice_task)
+
+    try:
+        return await asyncio.wait_for(asyncio.shield(voice_task), timeout=timeout_seconds)
+    except asyncio.TimeoutError:
+        logger.warning(
+            "[%s] Voice analysis timed out after %.0fms",
+            request_id,
+            timeout_seconds * 1000,
+        )
+        return _voice_fallback_result()
+    except Exception as exc:
+        logger.warning("[%s] Voice analysis failed: %s", request_id, exc)
+        return _voice_fallback_result()
 
 
 def warmup_audio_pipeline() -> None:
@@ -1349,7 +1410,9 @@ async def process_audio_chunk(
 
     analyze_start = time.perf_counter()
     try:
-        analysis_result = await asyncio.to_thread(analyze_voice, audio, sr, chunk_language, True, chunk_request.source or "file")
+        analysis_result = await analyze_voice_guarded(
+            audio, sr, 3.0, request_id, chunk_language, True, chunk_request.source or "file"
+        )
     except Exception as exc:
         logger.warning("[%s] Realtime model path failed: %s; using conservative fallback", request_id, exc)
         analysis_result = AnalysisResult(
@@ -1993,9 +2056,8 @@ async def detect_voice(
         remaining_budget = LEGACY_TIMEOUT_SECONDS - (time.perf_counter() - decode_start)
         if remaining_budget < 2:
             raise asyncio.TimeoutError("Insufficient time budget for analysis")
-        result = await asyncio.wait_for(
-            asyncio.to_thread(analyze_voice, audio, sr, voice_request.language),
-            timeout=max(2.0, remaining_budget)
+        result = await analyze_voice_guarded(
+            audio, sr, max(2.0, remaining_budget), request_id, voice_request.language
         )
         analyze_time = (time.perf_counter() - decode_start) * 1000
 

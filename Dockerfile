@@ -31,5 +31,5 @@ WORKDIR /app
 # Hugging Face Spaces uses port 7860
 EXPOSE 7860
 
-# Run the application (1 worker to prevent OOM on HF Spaces with heavy models)
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "7860", "--workers", "1"]
+# Run the application (2 workers for increased performance, Python handles thread locking to prevent OOM)
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "7860", "--workers", "2"]
